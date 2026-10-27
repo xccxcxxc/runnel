@@ -15,7 +15,16 @@
 - 本地 `origin` = 公开仓库（推送用 gh 的凭据，token 需要 `workflow` 权限），`private` = 私有仓库。
 - 签名：2026-10-23 起包名改为 `io.github.xccxcxxc.runnel`，换了新证书（CN=Runnel）；旧包 `io.github.xccxcxxc.brook` 不能覆盖升级，需手动卸载。公开仓库的 Secrets 是 `RUNNEL_KEYSTORE_B64` / `RUNNEL_KEYSTORE_PASSWORD`，旧的 `BROOK_*` 已弃用，可删。
 
-## 1. 当前状态（2026-10-24）
+## 1. 当前状态（2026-10-27）
+
+- **多账号 + 本机账号 + 本机导入 OPML**（2026-10-27，CI 测试包，用户还没真机测）：用户要求照 Reeder 做，以后还要接 Feedly 等，所以先把多账号底座做好。
+  - 结构见 `docs/SPEC.md` §2“多账号”“本机账号”。三步：① 每个账号一个 `AccountSession`（数据库、账号设置、FlagStore、SyncEngine、仓库、离线图片），页面靠 `LocalAccount`、路由带 `accountId`；② `SyncEngine` 只剩通用流程，各服务实现 `AccountBackend`（`GReaderBackend` / `LocalBackend` / `DemoBackend`），以后加 Feedly 就是再写一个；③ 本机账号 `sync/local/`。
+  - 页面：根页面是账号列表（`ui/home/AccountsScreen`），启动直接进上次打开的账号首页（栈 = 账号列表 + 首页）；首页左上从“设置”改成返回账号列表，设置只在账号列表左上角（照 Reeder）。添加账号是服务列表（`ui/login/LoginScreen.kt` 的 `AddAccountScreen`）。首页长按订阅源 → 编辑订阅源表单（改名、换文件夹、新建文件夹、取消订阅；服务器账号走 subscription/edit，也是新功能）。
+  - 升级迁移（`Prefs.migrateToMultiAccount`）：单账号版本的账号拿一个 id，数据库沿用 `runnel.db`（不搬文件），token 原样，原来全局的账号设置（同步方式/间隔、保留已读、订阅源排序、Reader View、离线图片、标记已读方式）和同步进度搬进 `acct_<id>.xml`；旧的后台任务 `runnel-sync` 取消，换成每个账号一个 `runnel-sync-<id>`。数据库 v2 → v3（AutoMigration，只新增 `local_feed_state`、`local_seen` 两张表）。
+  - 移除账号：先离开它的页面，再删账号记录和设置，1 秒后关数据库、删文件（等还在跑的查询结束）。
+  - 本机环境：这次在 Linux arm64 机器上做的，`~/.local/android-build-tools/jdk/21` + `~/Android/Sdk`，x86 的 aapt2 靠 qemu-binfmt 能跑，能编译、跑单元测试；没有 KVM，**不能开模拟器，仪器测试一个都没跑**。`ReaderImageCacheTest` 用了 Robolectric 原生运行时，arm64 Linux 不支持，本机必失败（CI 上正常）。
+  - 新测试：单元 `FeedParserTest`（RSS 2.0/1.0、Atom、JSON Feed、不规范写法、GBK、日期、文章 id）、`FeedFetcherTest`（从网页找订阅地址、304、错误）、`OpmlTest`（导入、导出再导入）、`GReaderApiTest.renameMoveAndUnsubscribe`；仪器 `AccountStorageTest`（重写：多账号、单账号版本迁移）、`LocalAccountTest`（添加、304、清理后不回来、编辑/取消订阅、导入 OPML、账号隔离）、`AccountsTest`（启动进上次账号、账号列表切换、设置里移除账号）。其余仪器测试改成用 `TestAccounts.fresh()` 建账号。**下次在 Windows 上先跑一遍全套仪器测试**。
+  - 已知没做：文件夹改名/删除；跨账号合并显示（用户明确不要）；换机迁移/系统备份不带账号列表（`account.xml` 不备份），本机账号的订阅会丢，先导出 OPML。
 
 - **Runnel 1.12 已发布**（2026-10-24）：正式 Release `v1.12`（https://github.com/xccxcxxc/runnel/releases/tag/v1.12，附 `Runnel-1.12.apk`，versionCode 215，正式签名 CN=Runnel，目标提交 `cf98b72`），可覆盖安装 1.11，用户还没真机测。相对 1.11 一项——再次打开刚读过的文章直接在原处，不重新载入、不滚动。用户嫌 1.11 的“盖住再露出”还是不够直接。
   - `WebViewPool.park/takeParked`：退出阅读页时，当前那篇（`ArticlePage` 释放时 `isCurrent` 为真且已恢复完）的 WebView 不清空，暂停媒体、`onPause` 后留在内存，最多 2 篇（用户定的），多了按最久的回收。翻页时滑出去的相邻页照常回收。
@@ -70,13 +79,15 @@
 
 - 推 `main` → GitHub Actions（`.github/workflows/build.yml`）：单元测试 + release APK，发布到滚动的 `latest` prerelease；Release 说明 = 自上一个包以来的提交标题和正文。连续推送时旧构建被取消（“已取消”不是故障）。
 - 签名：CI 用 Secrets（`RUNNEL_KEYSTORE_B64` / `RUNNEL_KEYSTORE_PASSWORD`），本地用 `%USERPROFILE%\.android\runnel-release.properties`，同一把证书（CN=Runnel）。**不要换证书、不要改包名**（上架 Play 后也改不了）；debug 签名的包不能给用户。
-- 单元测试（`app/src/test`，Robolectric + 纯逻辑）：`ListFilterTest`、`ReaderViewTest`、`ReaderLinkTest`、`PullFromBottomTest`、`GReaderApiTest`（MockWebServer）、`OpmlTest`、`ArticleProcessorTest`。
+- 单元测试（`app/src/test`，Robolectric + 纯逻辑）：`ListFilterTest`、`ReaderViewTest`、`ReaderLinkTest`、`PullFromBottomTest`、`GReaderApiTest`（MockWebServer）、`OpmlTest`、`ArticleProcessorTest`、`FeedParserTest`、`FeedFetcherTest`（MockWebServer）等。
+- 仪器测试建账号一律用 `TestAccounts.fresh(type)`（androidTest）：移除所有账号、加一个空账号、同步方式设为手动；数据库用 `account.db`，不要再找全局的。
 - 模拟器仪器测试（`app/src/androidTest`，21 个）：`ListGesturesTest`（上拉/按钮标已读并离开、全已读直接离开、短列表回弹、下一个订阅源从下往上进场、上拉进入下一个订阅源时标已读、长按菜单位置和以上/以下标已读、菜单边界和点外面收起）、`ReaderTest`（快速一划不切篇、拉够才切、真实 WebView 点标题打开原文、表情尺寸、图片下不显示域名、“…”面板改设置即时生效、图片走自己的缓存、WebView 焦点/区域请求不翻页）、`DatabaseTest`（事务回滚、分块标已读、离线队列、WAL 并发读）。只跑一个类：加 `"-Pandroid.testInstrumentationRunnerArguments.class=io.github.xccxcxxc.brook.ReaderTest"`；结果在 `app\build\outputs\androidTest-results\connected\debug\`。
 - 性能只用 release 包判断：真机见 `docs/DEVICE.md`，脚本 `scripts/perf.sh`。
 
 ## 5. 代码地图
 
-- `data/Prefs.kt`：`Settings` 和所有设置枚举。**新增设置改四处**：`Settings` 字段、`updateSettings` 的 put、`readSettings` 的 get、设置页。
+- `data/Prefs.kt`：全 App 的 `Settings`、所有设置枚举、账号列表（`account.xml`）。**新增设置改四处**：`Settings` 字段、`updateSettings` 的 put、`readSettings` 的 get、设置页。只对某个账号有意义的设置（尤其按订阅源 id 存的）放 `data/Accounts.kt` 的 `AccountSettings`（`AccountPrefs.read/write`）。
+- `AccountSession.kt`：一个账号的运行时；`Graph.session(id)` 取，`LocalAccount` 在页面里取。
 - `data/db/RunnelDatabase.kt`：Room + 系统 SQLite；事务一律 `db.inTransaction { }`，块里只调 suspend 的 DAO。
 - `ui/nav/`：自写页面栈（组合栈顶三层）。`push` 横向推入；`replaceTop`（下一个订阅源）从下往上进场（`NavEntry.enterFromBottom`），结束后移除旧页。
 - `ui/components/LargeTitleList.kt`：大标题列表；内容不满一屏时末尾垫高 1px，让短列表也有回弹。
