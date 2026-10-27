@@ -56,9 +56,10 @@ object WebViewPool {
      * 不重新载入，也就不用再滚到上次的位置（2026-10-24 用户要求“直接回到原处，不要滑”）。
      */
     private const val MAX_PARKED = 2
-    private val parked = LinkedHashMap<Long, WebView>()
+    /** 键是 “账号 id:文章 id”（不同账号的文章 id 可能重复）。 */
+    private val parked = LinkedHashMap<String, WebView>()
 
-    fun park(id: Long, view: WebView) {
+    fun park(id: String, view: WebView) {
         (view.webChromeClient as? FullscreenChrome)?.exit()
         (view.parent as? ViewGroup)?.removeView(view)
         view.setOnScrollChangeListener(null)
@@ -72,7 +73,7 @@ object WebViewPool {
     }
 
     /** 取回 [id] 留着的 WebView（没有就返回 null），交给 [context] 的页面。 */
-    fun takeParked(id: Long, context: Context): WebView? {
+    fun takeParked(id: String, context: Context): WebView? {
         val view = parked.remove(id) ?: return null
         (view.context as MutableContextWrapper).baseContext = context
         view.onResume()

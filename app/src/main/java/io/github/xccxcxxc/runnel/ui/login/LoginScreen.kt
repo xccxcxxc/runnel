@@ -41,43 +41,102 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.material3.Icon
 import io.github.xccxcxxc.runnel.Graph
+import io.github.xccxcxxc.runnel.data.Account
 import io.github.xccxcxxc.runnel.data.AccountType
+import io.github.xccxcxxc.runnel.ui.components.BarButton
 import io.github.xccxcxxc.runnel.ui.components.GroupedSection
 import io.github.xccxcxxc.runnel.ui.components.RowDivider
-import io.github.xccxcxxc.runnel.ui.components.SegmentedRow
+import io.github.xccxcxxc.runnel.ui.components.RunnelIcons
 import io.github.xccxcxxc.runnel.ui.components.pressHighlight
+import io.github.xccxcxxc.runnel.ui.home.accountIcon
 import io.github.xccxcxxc.runnel.ui.theme.Runnel
 import io.github.xccxcxxc.runnel.sync.isPublicCleartext
 import kotlinx.coroutines.launch
 
+/**
+ * 添加账号（照 Reeder 的服务列表）：本机、FreshRSS / Miniflux / 其他 GReader 服务器、演示数据。
+ * 没有账号时是根页面（没有返回按钮）；服务器类型点进去是 [LoginScreen]。
+ */
 @Composable
-fun LoginScreen(autoDemo: Boolean, onLoggedIn: () -> Unit) {
+fun AddAccountScreen(
+    autoDemo: Boolean,
+    canGoBack: Boolean,
+    onBack: () -> Unit,
+    onServer: (AccountType) -> Unit,
+    onAdded: (Account) -> Unit,
+) {
     val graph = Graph.get()
     val colors = Runnel.colors
     val scope = rememberCoroutineScope()
-    var type by rememberSaveable { mutableStateOf(AccountType.FRESHRSS) }
-    var server by rememberSaveable { mutableStateOf("") }
-    var user by rememberSaveable { mutableStateOf("") }
-    var pass by rememberSaveable { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    fun run(block: suspend () -> Unit) {
+    fun add(block: suspend () -> Account) {
         if (busy) return
         busy = true
         error = null
         scope.launch {
             runCatching { block() }
-                .onSuccess { onLoggedIn() }
+                .onSuccess(onAdded)
                 .onFailure { error = it.message ?: it.javaClass.simpleName }
             busy = false
         }
     }
 
     // macrobenchmark 启动时带参数：直接进演示数据
-    LaunchedEffect(autoDemo) { if (autoDemo) run { graph.loginDemo() } }
+    LaunchedEffect(autoDemo) { if (autoDemo) add { graph.addDemoAccount() } }
 
+    FormPage(canGoBack, onBack) {
+        Text(if (canGoBack) "添加账号" else "Runnel", style = Runnel.type.largeTitle, color = colors.label, modifier = Modifier.padding(horizontal = 32.dp))
+        Text(
+            "在这台设备上订阅，或者连接你的 FreshRSS、Miniflux 服务器",
+            style = Runnel.type.subhead,
+            color = colors.secondaryLabel,
+            modifier = Modifier.padding(horizontal = 32.dp, vertical = 6.dp),
+        )
+        GroupedSection(footer = "订阅源由这台设备自己定时抓取，已读和星标只保存在这台设备上。可以导入别的阅读器导出的 OPML。") {
+            ServiceRow(AccountType.LOCAL, "本机", Modifier.testTag("add_local")) { add { graph.addLocalAccount() } }
+        }
+        GroupedSection("同步服务", footer = "抓取由服务器完成，已读和星标和其他设备同步。") {
+            ServiceRow(AccountType.FRESHRSS, "FreshRSS") { onServer(AccountType.FRESHRSS) }
+            RowDivider()
+            ServiceRow(AccountType.MINIFLUX, "Miniflux") { onServer(AccountType.MINIFLUX) }
+            RowDivider()
+            ServiceRow(AccountType.GREADER, "其他 Google Reader API 服务") { onServer(AccountType.GREADER) }
+        }
+        GroupedSection {
+            ServiceRow(AccountType.DEMO, "先用演示数据看看", Modifier.testTag("demo_button")) { add { graph.addDemoAccount() } }
+        }
+        error?.let {
+            Text(it, style = Runnel.type.footnote, color = colors.destructive, modifier = Modifier.padding(horizontal = 32.dp, vertical = 10.dp))
+        }
+        if (busy) {
+            CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally).padding(top = 16.dp).size(22.dp), color = colors.accent, strokeWidth = 2.dp)
+        }
+    }
+}
+
+@Composable
+private fun ServiceRow(type: AccountType, title: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val colors = Runnel.colors
+    Row(
+        modifier.fillMaxWidth().pressHighlight(onClick).heightIn(min = 52.dp).padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(accountIcon(type), null, tint = colors.accent, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(14.dp))
+        Text(title, style = Runnel.type.body, color = colors.label, modifier = Modifier.weight(1f))
+        Icon(RunnelIcons.ChevronRight, null, tint = colors.tertiaryLabel, modifier = Modifier.size(16.dp))
+    }
+}
+
+/** 登录页、添加账号页共用的外框：分组背景、可滚动，[canGoBack] 时左上角有返回。 */
+@Composable
+private fun FormPage(canGoBack: Boolean, onBack: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    val colors = Runnel.colors
     Column(
         Modifier
             .fillMaxSize()
@@ -87,10 +146,42 @@ fun LoginScreen(autoDemo: Boolean, onLoggedIn: () -> Unit) {
             .navigationBarsPadding()
             .imePadding(),
     ) {
-        Spacer(Modifier.height(36.dp))
-        Text("Runnel", style = Runnel.type.largeTitle, color = colors.label, modifier = Modifier.padding(horizontal = 32.dp))
+        Box(Modifier.fillMaxWidth().height(44.dp).padding(start = 4.dp)) {
+            if (canGoBack) BarButton(RunnelIcons.Back, "返回", onClick = onBack)
+        }
+        content()
+        Spacer(Modifier.height(32.dp))
+    }
+}
+
+/** 服务器账号的登录表单。 */
+@Composable
+fun LoginScreen(type: AccountType, onBack: () -> Unit, onAdded: (Account) -> Unit) {
+    val graph = Graph.get()
+    val colors = Runnel.colors
+    val scope = rememberCoroutineScope()
+    var server by rememberSaveable { mutableStateOf("") }
+    var user by rememberSaveable { mutableStateOf("") }
+    var pass by rememberSaveable { mutableStateOf("") }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    fun login() {
+        if (busy) return
+        busy = true
+        error = null
+        scope.launch {
+            runCatching { graph.addGReaderAccount(type, server, user, pass) }
+                .onSuccess(onAdded)
+                .onFailure { error = it.message ?: it.javaClass.simpleName }
+            busy = false
+        }
+    }
+
+    FormPage(canGoBack = true, onBack = onBack) {
+        Text(if (type == AccountType.GREADER) "Google Reader API" else type.label, style = Runnel.type.largeTitle, color = colors.label, modifier = Modifier.padding(horizontal = 32.dp))
         Text(
-            "连接你的 FreshRSS 或 Miniflux 服务器",
+            "连接你的服务器",
             style = Runnel.type.subhead,
             color = colors.secondaryLabel,
             modifier = Modifier.padding(horizontal = 32.dp, vertical = 6.dp),
@@ -102,12 +193,6 @@ fun LoginScreen(autoDemo: Boolean, onLoggedIn: () -> Unit) {
                 else -> "填 Google Reader 兼容 API 的根地址（/accounts/ClientLogin 的上一级）。"
             },
         ) {
-            SegmentedRow(
-                null,
-                listOf(AccountType.FRESHRSS to "FreshRSS", AccountType.MINIFLUX to "Miniflux", AccountType.GREADER to "其他 GReader"),
-                type,
-            ) { type = it }
-            RowDivider()
             Field("服务器", server, "https://rss.example.com", KeyboardType.Uri) { server = it }
             RowDivider()
             Field("用户名", user, "username", KeyboardType.Text) { user = it }
@@ -131,20 +216,7 @@ fun LoginScreen(autoDemo: Boolean, onLoggedIn: () -> Unit) {
             busy = busy,
             enabled = server.isNotBlank() && user.isNotBlank() && pass.isNotBlank(),
             modifier = Modifier.testTag("login_button"),
-        ) { run { graph.login(type, server, user, pass) } }
-        Spacer(Modifier.height(10.dp))
-        Text(
-            "先用演示数据看看",
-            style = Runnel.type.body,
-            color = colors.accent,
-            modifier = Modifier
-                .align(Alignment.CenterHorizontally)
-                .clip(RoundedCornerShape(8.dp))
-                .pressHighlight { run { graph.loginDemo() } }
-                .padding(horizontal = 16.dp, vertical = 10.dp)
-                .testTag("demo_button"),
-        )
-        Spacer(Modifier.height(32.dp))
+        ) { login() }
     }
 }
 

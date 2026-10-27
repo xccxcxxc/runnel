@@ -35,7 +35,7 @@ class LoginCleartextWarningTest {
 
     @Test
     fun warnsOnlyForPublicHttp() {
-        rule.setContent { RunnelTheme(Settings()) { LoginScreen(autoDemo = false, onLoggedIn = {}) } }
+        rule.setContent { RunnelTheme(Settings()) { LoginScreen(io.github.xccxcxxc.runnel.data.AccountType.FRESHRSS, onBack = {}, onAdded = {}) } }
         rule.onNodeWithTag("cleartext_warning").assertDoesNotExist()
 
         typeServer("http://rss.example.com")

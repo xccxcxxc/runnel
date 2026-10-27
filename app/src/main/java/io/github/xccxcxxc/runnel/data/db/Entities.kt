@@ -80,6 +80,32 @@ data class PendingActionEntity(
     }
 }
 
+/**
+ * 本机账号：每个订阅源的抓取状态。[etag] / [lastModified] 用于条件请求（没变时服务器回 304，不用重新下载解析）。
+ * [seenStamp] 是上次成功拿到订阅源（200 或 304）的时间，那次订阅源里的文章 [LocalSeen.lastSeenAt] 都等于它。
+ */
+@Entity(tableName = "local_feed_state")
+data class LocalFeedState(
+    @PrimaryKey val feedId: String,
+    val etag: String?,
+    val lastModified: String?,
+    val seenStamp: Long,
+    val checkedAt: Long,
+    /** 上次抓取失败的原因；成功后清空。 */
+    val error: String?,
+)
+
+/**
+ * 本机账号：订阅源里出现过的文章 id。已读文章按“保留已读文章”清理掉以后，订阅源里还挂着它，
+ * 下次抓取也不会当成新文章再加回来。
+ */
+@Entity(tableName = "local_seen", indices = [Index("feedId")])
+data class LocalSeen(
+    @PrimaryKey val articleId: Long,
+    val feedId: String,
+    val lastSeenAt: Long,
+)
+
 @Fts4(contentEntity = ArticleEntity::class)
 @Entity(tableName = "articles_fts")
 data class ArticleFts(

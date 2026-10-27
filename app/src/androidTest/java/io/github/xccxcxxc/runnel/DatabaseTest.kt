@@ -31,17 +31,18 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidJUnit4::class)
 class DatabaseTest {
-    private val graph get() = Graph.get()
-    private val db get() = graph.db
-    private val repo get() = graph.repo
+    private lateinit var account: AccountSession
+    private val db get() = account.db
+    private val repo get() = account.repo
 
-    @Before
-    fun setUp() = runBlocking {
-        graph.logout()
-        graph.prefs.updateSettings { it.copy(syncMode = SyncMode.MANUAL) }
-        // 演示文章要逐篇清洗正文，多了很慢（用户：最多 200 篇）；要跨 SQL 分块的测试自己插轻量文章
+    /** 每个测试一个新账号（[type]），填 200 篇演示文章。演示文章要逐篇清洗正文，多了很慢（用户：最多 200 篇）；要跨 SQL 分块的测试自己插轻量文章。 */
+    private fun start(type: AccountType = AccountType.DEMO, apiBase: String = "") = runBlocking {
+        account = TestAccounts.fresh(type, apiBase, token = if (type.isGReader) "t" else "")
         DemoData.populate(db, count = 200)
     }
+
+    @Before
+    fun setUp() = start()
 
     private fun unread(source: ArticleSource = ArticleSource.All) = runBlocking { repo.loadList(source, FilterMode.UNREAD).size }
 
@@ -82,7 +83,7 @@ class DatabaseTest {
      */
     @Test
     fun remoteActionsAreQueuedForSync() = runBlocking {
-        graph.prefs.saveAccount(Account(AccountType.FRESHRSS, "http://127.0.0.1:9", "u"), "t")
+        start(AccountType.FRESHRSS, "http://127.0.0.1:9")
         val feed = db.feedDao().allFeeds().first().let { ArticleSource.Feed(it.id, it.title, null) }
         val ids = repo.loadList(feed, FilterMode.UNREAD).map { it.id }
         assertTrue(ids.size > 3)
@@ -100,10 +101,12 @@ class DatabaseTest {
         assertEquals(pending.size, db.pendingDao().all().size)
     }
 
-    /** 演示账号不排离线队列。 */
+    /** 演示账号、本机账号不排离线队列（没有服务器可提交）。 */
     @Test
     fun localAccountDoesNotQueue() = runBlocking {
-        graph.prefs.saveAccount(Account(AccountType.DEMO, "", "demo"))
+        repo.setRead(db.articleDao().allIds().take(10), true)
+        assertEquals(0, db.pendingDao().all().size)
+        start(AccountType.LOCAL)
         repo.setRead(db.articleDao().allIds().take(10), true)
         assertEquals(0, db.pendingDao().all().size)
     }

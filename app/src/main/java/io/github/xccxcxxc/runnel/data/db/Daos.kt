@@ -20,6 +20,9 @@ interface FeedDao {
     @Query("SELECT * FROM feeds")
     suspend fun allFeeds(): List<FeedEntity>
 
+    @Query("SELECT * FROM folders ORDER BY sortIndex, title COLLATE NOCASE")
+    suspend fun allFolders(): List<FolderEntity>
+
     @Upsert
     suspend fun upsertFolders(folders: List<FolderEntity>)
 
@@ -31,6 +34,31 @@ interface FeedDao {
 
     @Query("DELETE FROM feeds WHERE id NOT IN (:keep)")
     suspend fun deleteFeedsExcept(keep: List<String>)
+
+    @Query("SELECT * FROM feeds WHERE id = :id")
+    suspend fun feed(id: String): FeedEntity?
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertFeeds(feeds: List<FeedEntity>)
+
+    @Query("SELECT COALESCE(MAX(sortIndex) + 1, 0) FROM feeds")
+    suspend fun nextFeedIndex(): Int
+
+    @Query("SELECT COALESCE(MAX(sortIndex) + 1, 0) FROM folders")
+    suspend fun nextFolderIndex(): Int
+
+    @Query("UPDATE feeds SET title = :title, folderId = :folderId WHERE id = :id")
+    suspend fun editFeed(id: String, title: String, folderId: String?)
+
+    @Query("UPDATE feeds SET title = :title, siteUrl = :siteUrl WHERE id = :id")
+    suspend fun setFeedInfo(id: String, title: String, siteUrl: String?)
+
+    @Query("DELETE FROM feeds WHERE id = :id")
+    suspend fun deleteFeed(id: String)
+
+    /** 里面已经没有订阅源的文件夹（本机账号移走/取消订阅后用；服务器账号的文件夹由同步对齐）。 */
+    @Query("DELETE FROM folders WHERE id NOT IN (SELECT folderId FROM feeds WHERE folderId IS NOT NULL)")
+    suspend fun deleteEmptyFolders()
 
     @Query("UPDATE feeds SET localIcon = :icon WHERE id = :id")
     suspend fun setLocalIcon(id: String, icon: String)
@@ -58,6 +86,10 @@ interface ArticleDao {
 
     @Query("SELECT feedId, COUNT(*) AS cnt FROM articles GROUP BY feedId")
     fun observeAllCounts(): Flow<List<FeedCount>>
+
+    /** 账号列表里每个账号的未读数（只算还在订阅的源）。 */
+    @Query("SELECT COUNT(*) FROM articles WHERE isRead = 0 AND feedId IN (SELECT id FROM feeds)")
+    fun observeUnreadTotal(): Flow<Int>
 
     @Query(
         """
@@ -138,4 +170,46 @@ interface PendingDao {
 
     @Query("DELETE FROM pending_actions")
     suspend fun clear()
+}
+
+/** 本机账号的抓取状态（见 [LocalFeedState]、[LocalSeen]）。 */
+@Dao
+interface LocalDao {
+    @Query("SELECT * FROM local_feed_state")
+    suspend fun states(): List<LocalFeedState>
+
+    @Query("SELECT * FROM local_feed_state WHERE feedId = :feedId")
+    suspend fun state(feedId: String): LocalFeedState?
+
+    @Upsert
+    suspend fun upsertState(state: LocalFeedState)
+
+    @Query("UPDATE local_feed_state SET checkedAt = :now, error = :error WHERE feedId = :feedId")
+    suspend fun setError(feedId: String, now: Long, error: String)
+
+    @Query("SELECT articleId FROM local_seen WHERE feedId = :feedId")
+    suspend fun seenIds(feedId: String): List<Long>
+
+    @Upsert
+    suspend fun upsertSeen(rows: List<LocalSeen>)
+
+    /** 订阅源没变（304）：上次在订阅源里的文章这次也还在。 */
+    @Query("UPDATE local_seen SET lastSeenAt = :now WHERE feedId = :feedId AND lastSeenAt = :stamp")
+    suspend fun touchSeen(feedId: String, stamp: Long, now: Long)
+
+    /** 已经从订阅源里消失超过 [marginMs]、本地也没有了的文章，不用再记。 */
+    @Query(
+        """
+        DELETE FROM local_seen
+        WHERE lastSeenAt < (SELECT s.seenStamp FROM local_feed_state s WHERE s.feedId = local_seen.feedId) - :marginMs
+          AND articleId NOT IN (SELECT id FROM articles)
+        """,
+    )
+    suspend fun pruneSeen(marginMs: Long): Int
+
+    @Query("DELETE FROM local_seen WHERE feedId = :feedId")
+    suspend fun deleteSeen(feedId: String)
+
+    @Query("DELETE FROM local_feed_state WHERE feedId = :feedId")
+    suspend fun deleteState(feedId: String)
 }

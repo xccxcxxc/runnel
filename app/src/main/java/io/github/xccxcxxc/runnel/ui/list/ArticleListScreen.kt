@@ -66,7 +66,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.github.xccxcxxc.runnel.AccountSession
 import io.github.xccxcxxc.runnel.AppGraph
+import io.github.xccxcxxc.runnel.LocalAccount
 import io.github.xccxcxxc.runnel.Graph
 import io.github.xccxcxxc.runnel.data.ArticleSource
 import io.github.xccxcxxc.runnel.data.FilterMode
@@ -122,6 +124,7 @@ class BuiltList(val items: List<ArticleListItem>, val rows: List<ListRow>) {
 /** 列表快照与“新文章”提示。快照打开后不随数据库变化重排，避免阅读时列表跳动。 */
 class ArticleListState(
     private val graph: AppGraph,
+    private val account: AccountSession,
     private val scope: CoroutineScope,
     val source: ArticleSource,
     initialFilter: FilterMode,
@@ -150,8 +153,8 @@ class ArticleListState(
     init {
         reload()
         scope.launch {
-            graph.sync.dataVersion.drop(1).collect {
-                val fresh = graph.repo.loadList(source, filter)
+            account.sync.dataVersion.drop(1).collect {
+                val fresh = account.repo.loadList(source, filter)
                 val current = raw.orEmpty().mapTo(HashSet()) { it.id }
                 val added = fresh.count { it.id !in current }
                 if (added > 0) {
@@ -164,7 +167,7 @@ class ArticleListState(
 
     private fun reload() {
         scope.launch {
-            val list = graph.repo.loadList(source, filter)
+            val list = account.repo.loadList(source, filter)
             raw = list
             built = build(list, query)
         }
@@ -286,11 +289,13 @@ fun ArticleListScreen(
 ) {
     val graph = Graph.get()
     val entry = LocalNavEntry.current
-    val state = entry.retain("list") { ArticleListState(graph, entry.scope, source, filter) }
-    val repo = graph.repo
+    val account = LocalAccount.current
+    val state = entry.retain("list") { ArticleListState(graph, account, entry.scope, source, filter) }
+    val repo = account.repo
     val flags = repo.flags
-    val sync by graph.sync.state.collectAsStateWithLifecycle()
+    val sync by account.sync.state.collectAsStateWithLifecycle()
     val settings by graph.prefs.settings.collectAsStateWithLifecycle()
+    val accountSettings by account.prefs.settings.collectAsStateWithLifecycle()
     // 提前在空闲时组合/排版前方约一屏的行（Compose 1.9+），快速滑动时新行不必在当帧现做
     val listState = rememberLazyListState(cacheWindow = LazyLayoutCacheWindow(ahead = 720.dp, behind = 240.dp))
     val scope = rememberCoroutineScope()
@@ -303,7 +308,7 @@ fun ArticleListScreen(
     FollowReader(state, listState)
     val thumbSize = settings.imagePreview.thumbSize()
     if (built != null && thumbSize != null) PrefetchThumbnails(listState, built.rows, thumbSize)
-    if (settings.markReadOnScroll && built != null) MarkReadOnScroll(listState, built.rows)
+    if (accountSettings.markReadOnScroll && built != null) MarkReadOnScroll(listState, built.rows)
     val focusManager = LocalFocusManager.current
     val context = LocalContext.current
     // 切换筛选或改了 Filter 文字后回到顶部（输入框在列表顶部）
@@ -417,7 +422,7 @@ fun ArticleListScreen(
         },
         navigation = { BarButton(RunnelIcons.Back, "返回", onClick = onBack) },
         refreshing = sync is SyncState.Running,
-        onRefresh = { graph.sync.requestSync() },
+        onRefresh = { account.sync.requestSync() },
         bottomBar = {
             FilterBottomBar(
                 current = state.filter,
@@ -658,7 +663,7 @@ private fun FollowReader(state: ArticleListState, listState: LazyListState) {
 /** “滚动时标为已读”：完全滑出屏幕顶部的文章，攒一小批后一起标为已读。 */
 @Composable
 private fun MarkReadOnScroll(listState: LazyListState, rows: List<ListRow>) {
-    val repo = Graph.get().repo
+    val repo = LocalAccount.current.repo
     LaunchedEffect(listState, rows) {
         var marked = 0 // rows 里已处理到的下标
         snapshotFlow { listState.firstVisibleItemIndex }

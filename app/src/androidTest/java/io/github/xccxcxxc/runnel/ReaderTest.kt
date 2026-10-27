@@ -71,12 +71,13 @@ class ReaderTest {
 
     private var scenario: ActivityScenario<MainActivity>? = null
     private val graph get() = Graph.get()
+    private lateinit var account: AccountSession
     private val original = "https://ex.com/post?id=1&x=2"
 
     @Before
     fun setUp() {
-        runBlocking { graph.logout() }
-        graph.prefs.updateSettings { it.copy(syncMode = SyncMode.MANUAL, openLinks = OpenLinks.DEFAULT_BROWSER, titleUppercase = false) }
+        account = TestAccounts.fresh()
+        graph.prefs.updateSettings { it.copy(openLinks = OpenLinks.DEFAULT_BROWSER, titleUppercase = false) }
     }
 
     @After
@@ -94,20 +95,19 @@ class ReaderTest {
     private fun openArticle(body: String, second: Boolean = false) {
         val now = System.currentTimeMillis()
         runBlocking {
-            graph.db.feedDao().upsertFeeds(listOf(FeedEntity("feed/test", "测试源", null, "https://ex.com", null, null, 0)))
-            graph.db.articleDao().insertArticles(
+            account.db.feedDao().upsertFeeds(listOf(FeedEntity("feed/test", "测试源", null, "https://ex.com", null, null, 0)))
+            account.db.articleDao().insertArticles(
                 listOf(ArticleEntity(1, "feed/test", "阅读页测试文章", "作者", original, now - 60_000, "摘要", null, 1, false, false, now)),
             )
-            graph.db.articleDao().insertContents(listOf(ArticleContentEntity(1, body, null)))
+            account.db.articleDao().insertContents(listOf(ArticleContentEntity(1, body, null)))
             if (second) {
                 // 比第一篇新：“未读”旧→新排，它是下一篇
-                graph.db.articleDao().insertArticles(
+                account.db.articleDao().insertArticles(
                     listOf(ArticleEntity(2, "feed/test", "第二篇", "作者", "https://ex.com/2", now, "摘要", null, 1, false, false, now)),
                 )
-                graph.db.articleDao().insertContents(listOf(ArticleContentEntity(2, "<p>第二篇正文</p>", null)))
+                account.db.articleDao().insertContents(listOf(ArticleContentEntity(2, "<p>第二篇正文</p>", null)))
             }
         }
-        graph.prefs.saveAccount(Account(AccountType.DEMO, "", "demo"))
         scenario = ActivityScenario.launch(Intent(ApplicationProvider.getApplicationContext(), MainActivity::class.java))
         rule.waitUntilAtLeastOneExists(hasText("测试源"), 30_000)
         rule.onNodeWithText("测试源").performClick()

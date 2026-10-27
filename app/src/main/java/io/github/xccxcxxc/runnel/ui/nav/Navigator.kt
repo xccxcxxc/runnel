@@ -16,6 +16,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.util.VelocityTracker1D
+import io.github.xccxcxxc.runnel.data.AccountType
 import io.github.xccxcxxc.runnel.data.ArticleSource
 import io.github.xccxcxxc.runnel.data.FilterMode
 import io.github.xccxcxxc.runnel.perf.PerfMonitor
@@ -39,20 +40,29 @@ sealed interface Route {
     /** 推入时等首屏数据（[NavEntry.markContentReady]）再开始滑入：文章列表的数据要查库，一屏十几行一起排版是最重的一帧。 */
     val waitsForContent: Boolean get() = this is Articles
 
-    data object Login : Route
-    data object Home : Route
-    data class Articles(val source: ArticleSource, val filter: FilterMode) : Route
-    data class Reader(val session: ReaderSession) : Route
-    data object Search : Route
+    /** 添加账号：选服务（没有账号时是根页面）。 */
+    data object AddAccount : Route
+    /** 服务器账号的登录表单。 */
+    data class Login(val type: AccountType) : Route
+    /** 账号列表（根页面，照 Reeder）。 */
+    data object Accounts : Route
+    data class Home(override val accountId: String) : Route
+    data class Articles(override val accountId: String, val source: ArticleSource, val filter: FilterMode) : Route
+    data class Reader(override val accountId: String, val session: ReaderSession) : Route
+    data class Search(override val accountId: String) : Route
+
+    /** 页面所属的账号；账号列表、登录页为 null。 */
+    val accountId: String? get() = null
 
     /** 帧统计里的页面名（release 包混淆后 javaClass.simpleName 会变成 “Route$Articles”）。 */
     val perfName: String
         get() = when (this) {
-            Login -> "Login"
-            Home -> "Home"
+            AddAccount, is Login -> "Login"
+            Accounts -> "Accounts"
+            is Home -> "Home"
             is Articles -> "Articles"
             is Reader -> "Reader"
-            Search -> "Search"
+            is Search -> "Search"
         }
 }
 
@@ -130,9 +140,9 @@ fun BlockSwipeBack(block: Boolean) {
  * 推入时 0→1，返回时 1→0；侧滑返回时由手指位置直接驱动，松手后带速度弹到终点。
  */
 @Stable
-class Navigator(start: Route, private val scope: CoroutineScope) {
+class Navigator(start: List<Route>, private val scope: CoroutineScope) {
     private var nextId = 0
-    val stack = mutableStateListOf(NavEntry(start, nextId++))
+    val stack = mutableStateListOf<NavEntry>().apply { start.forEach { add(NavEntry(it, nextId++)) } }
     var progress by mutableFloatStateOf(1f)
         private set
     var transitioning by mutableStateOf(false)
@@ -209,15 +219,15 @@ class Navigator(start: Route, private val scope: CoroutineScope) {
         }
     }
 
-    /** 清空栈换成 [route]（登录完成、退出登录）。 */
-    fun replaceAll(route: Route) {
+    /** 清空栈换成 [routes]（最后一个在顶上；添加、移除账号后用）。 */
+    fun replaceAll(vararg routes: Route) {
         job?.cancel()
         stack.toList().forEach { it.dispose(); onEntryRemoved(it) }
         stack.clear()
-        stack += NavEntry(route, nextId++)
+        routes.forEach { stack += NavEntry(it, nextId++) }
         progress = 1f
         transition(null)
-        PerfMonitor.setScreen(route.perfName)
+        PerfMonitor.setScreen(routes.last().perfName)
     }
 
     /** 系统预测性返回手势：页面跟手平移；取消则弹回，确认则带手指速度完成返回。 */

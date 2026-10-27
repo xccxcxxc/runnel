@@ -77,7 +77,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.net.toUri
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.github.xccxcxxc.runnel.AccountSession
 import io.github.xccxcxxc.runnel.AppGraph
+import io.github.xccxcxxc.runnel.LocalAccount
 import io.github.xccxcxxc.runnel.Graph
 import io.github.xccxcxxc.runnel.content.PageVideo
 import io.github.xccxcxxc.runnel.data.ArticleSource
@@ -104,15 +106,15 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlin.math.sign
 
-/** 每篇文章退出时的正文滚动位置（px），再次打开同一篇时回到那里；只在本次运行内记，最多记 100 篇。 */
+/** 每篇文章退出时的正文滚动位置（px），再次打开同一篇时回到那里；只在本次运行内记，最多记 100 篇。键是 “账号 id:文章 id”。 */
 private object ReaderScrollMemory {
-    private val positions = object : LinkedHashMap<Long, Int>(16, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Int>) = size > 100
+    private val positions = object : LinkedHashMap<String, Int>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Int>) = size > 100
     }
 
-    operator fun get(id: Long): Int = positions[id] ?: 0
+    operator fun get(id: String): Int = positions[id] ?: 0
 
-    operator fun set(id: Long, y: Int) {
+    operator fun set(id: String, y: Int) {
         if (y > 0) positions[id] = y else positions.remove(id)
     }
 }
@@ -129,7 +131,9 @@ private class ScrollRestore(var target: Int) {
 }
 
 /** 阅读页状态：已加载文章的缓存、全文模式、提示消息、拉动切篇的位移。 */
-class ReaderState(private val graph: AppGraph, private val scope: CoroutineScope) {
+class ReaderState(private val graph: AppGraph, private val account: AccountSession, private val scope: CoroutineScope) {
+    val accountId: String get() = account.id
+
     private val cache = LinkedHashMap<Long, ReaderArticle>(16, 0.75f, true)
     val fullText = mutableStateMapOf<Long, String>()
     val showFull = mutableStateMapOf<Long, Boolean>()
@@ -166,7 +170,7 @@ class ReaderState(private val graph: AppGraph, private val scope: CoroutineScope
 
     suspend fun load(id: Long): ReaderArticle? {
         cache[id]?.let { return it }
-        val a = graph.repo.reader(id) ?: return null
+        val a = account.repo.reader(id) ?: return null
         cache[id] = a
         if (cache.size > 24) cache.remove(cache.keys.first())
         a.fullHtml?.let { fullText[id] = it }
@@ -182,7 +186,7 @@ class ReaderState(private val graph: AppGraph, private val scope: CoroutineScope
     suspend fun autoFullText(id: Long) {
         if (id in autoTried) return
         val article = load(id) ?: return
-        if (!graph.prefs.settings.value.autoReaderView(article.feedId) && !PageVideo.shouldFetch(article.url, article.html)) return
+        if (!account.prefs.settings.value.autoReaderView(article.feedId) && !PageVideo.shouldFetch(article.url, article.html)) return
         autoTried += id
         if (showFull[id] != true && article.url != null) toggleFullText(article)
     }
@@ -200,7 +204,7 @@ class ReaderState(private val graph: AppGraph, private val scope: CoroutineScope
         if (article.url == null || loadingFull[id] == true) return
         loadingFull[id] = true
         scope.launch {
-            runCatching { graph.repo.fetchFullText(article) }
+            runCatching { account.repo.fetchFullText(article) }
                 .onSuccess {
                     fullText[id] = it
                     showFull[id] = true
@@ -229,8 +233,9 @@ class ReaderState(private val graph: AppGraph, private val scope: CoroutineScope
 @Composable
 fun ReaderScreen(session: ReaderSession, onBack: () -> Unit) {
     val graph = Graph.get()
+    val account = LocalAccount.current
     val entry = LocalNavEntry.current
-    val state = entry.retain("reader") { ReaderState(graph, entry.scope) }
+    val state = entry.retain("reader") { ReaderState(graph, account, entry.scope) }
     val settings by graph.prefs.settings.collectAsStateWithLifecycle()
     val colors = Runnel.colors
     val scope = rememberCoroutineScope()
@@ -245,7 +250,7 @@ fun ReaderScreen(session: ReaderSession, onBack: () -> Unit) {
             session.currentIndex = page
             state.currentId = session.ids.getOrNull(page) ?: -1L
             state.barsVisible = true
-            if (graph.prefs.settings.value.markReadOnOpen) session.ids.getOrNull(page)?.let { graph.repo.markReadIfUnread(it) }
+            if (account.prefs.settings.value.markReadOnOpen) session.ids.getOrNull(page)?.let { account.repo.markReadIfUnread(it) }
             session.ids.getOrNull(page)?.let { state.autoFullText(it) }
         }
     }
@@ -265,7 +270,7 @@ fun ReaderScreen(session: ReaderSession, onBack: () -> Unit) {
     // 读到最后一篇时，如果开了“读完后进入下一个订阅源”，找出下一个来源
     val nextSource by produceState<ArticleSource?>(null, pagerState.currentPage, session.source, settings.autoNextFeed) {
         value = if (settings.autoNextFeed && pagerState.currentPage == session.ids.size - 1) {
-            graph.repo.nextSource(session.source, session.filter)
+            account.repo.nextSource(session.source, session.filter)
         } else {
             null
         }
@@ -276,8 +281,8 @@ fun ReaderScreen(session: ReaderSession, onBack: () -> Unit) {
         val next = nextSource ?: return
         val previous = session.source
         scope.launch {
-            graph.repo.markAllRead(previous, Long.MAX_VALUE)
-            val list = graph.repo.loadOrdered(next, session.filter)
+            account.repo.markAllRead(previous, Long.MAX_VALUE)
+            val list = account.repo.loadOrdered(next, session.filter)
             if (list.isEmpty()) return@launch
             session.source = next
             session.ids = list.map { it.id }
@@ -430,8 +435,9 @@ private fun ArticlePage(id: Long, isCurrent: Boolean, state: ReaderState, settin
     val bg = colors.background.toArgb()
     val context = LocalContext.current
     // 上次退出时留在内存里的 WebView（WebViewPool.park）：正文已排好、停在原位置，直接复用，不用恢复
-    val parked = remember(id) { WebViewPool.takeParked(id, context) }
-    val restore = remember(id) { ScrollRestore(if (parked != null) 0 else ReaderScrollMemory[id]).also { it.parked = parked != null } }
+    val memKey = "${state.accountId}:$id"
+    val parked = remember(id) { WebViewPool.takeParked(memKey, context) }
+    val restore = remember(id) { ScrollRestore(if (parked != null) 0 else ReaderScrollMemory[memKey]).also { it.parked = parked != null } }
     val current by rememberUpdatedState(isCurrent)
     // 没有留着的 WebView 时，第一次载入正文后滚回上次退出时的位置：图片还没撑开高度时 scrollTo 会被截短，所以隔一会儿重试，
     // 到位或用户自己动了手就停。恢复期间正文被背景色盖住，到位后一次性露出（最多盖 0.8 秒，之后仍在后台继续重试）
@@ -487,10 +493,10 @@ private fun ArticlePage(id: Long, isCurrent: Boolean, state: ReaderState, settin
             modifier = Modifier.fillMaxSize(),
             onReset = null,
             onRelease = {
-                if (restore.settled && it.tag != null) ReaderScrollMemory[id] = it.scrollY
+                if (restore.settled && it.tag != null) ReaderScrollMemory[memKey] = it.scrollY
                 if (state.webViews[id] === it) state.webViews.remove(id)
                 // 正在看的这篇（退回列表等）原样留在内存里，再打开时直接复用；翻页时滑出去的相邻页照常回收
-                if (current && restore.settled && it.tag != null) WebViewPool.park(id, it) else WebViewPool.recycle(it)
+                if (current && restore.settled && it.tag != null) WebViewPool.park(memKey, it) else WebViewPool.recycle(it)
             },
             update = { view ->
                 view.setBackgroundColor(bg)
@@ -557,23 +563,23 @@ private fun ReaderToolbar(
     onNext: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val graph = Graph.get()
+    val repo = LocalAccount.current.repo
     val colors = Runnel.colors
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val id = article?.id
-    val dbFlags by remember(id) { if (id != null) graph.repo.observeFlags(id) else flowOf(null) }
+    val dbFlags by remember(id) { if (id != null) repo.observeFlags(id) else flowOf(null) }
         .collectAsState(null)
-    val read = id?.let { graph.repo.flags.read[it] } ?: dbFlags?.isRead ?: true
-    val starred = id?.let { graph.repo.flags.starred[it] } ?: dbFlags?.isStarred ?: false
+    val read = id?.let { repo.flags.read[it] } ?: dbFlags?.isRead ?: true
+    val starred = id?.let { repo.flags.starred[it] } ?: dbFlags?.isStarred ?: false
 
     BottomToolbar(modifier) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
             BarButton(if (read) RunnelIcons.CircleOutline else RunnelIcons.Circle, if (read) "标为未读" else "标为已读", enabled = id != null) {
-                if (id != null) scope.launch { graph.repo.setRead(listOf(id), !read) }
+                if (id != null) scope.launch { repo.setRead(listOf(id), !read) }
             }
             BarButton(if (starred) RunnelIcons.Star else RunnelIcons.StarOutline, if (starred) "取消星标" else "加星标", enabled = id != null) {
-                if (id != null) scope.launch { graph.repo.setStarred(id, !starred) }
+                if (id != null) scope.launch { repo.setStarred(id, !starred) }
             }
             BarButton(RunnelIcons.ChevronDown, "下一篇", enabled = canNext, onClick = onNext)
             Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {

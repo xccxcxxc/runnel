@@ -1,5 +1,6 @@
 package io.github.xccxcxxc.runnel.ui.home
 
+import android.view.HapticFeedbackConstants
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
@@ -16,6 +17,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -24,6 +26,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -31,8 +34,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import io.github.xccxcxxc.runnel.AppGraph
+import io.github.xccxcxxc.runnel.AccountSession
 import io.github.xccxcxxc.runnel.Graph
+import io.github.xccxcxxc.runnel.LocalAccount
 import io.github.xccxcxxc.runnel.data.ArticleSource
 import io.github.xccxcxxc.runnel.data.FilterMode
 import io.github.xccxcxxc.runnel.data.SortSubs
@@ -70,14 +74,14 @@ data class HomeModel(
     val feedsFirst: Boolean = false,
 )
 
-class HomeState(graph: AppGraph, scope: CoroutineScope) {
+class HomeState(session: AccountSession, scope: CoroutineScope) {
     val filter = MutableStateFlow(FilterMode.UNREAD)
     /** 文件夹默认展开，只记录被用户收起的。 */
     val collapsed = mutableStateMapOf<String, Boolean>()
     var foldersHidden by mutableStateOf(false)
 
     val model: StateFlow<HomeModel> = combine(
-        graph.repo.folders, graph.repo.feeds, graph.repo.counts(filter), filter, graph.prefs.settings,
+        session.repo.folders, session.repo.feeds, session.repo.counts(filter), filter, session.prefs.settings,
     ) { folders, feeds, counts, mode, settings ->
         val hideEmpty = mode != FilterMode.ALL
         val rows = feeds.map { FeedRow(it.id, it.title, it.iconUrl ?: it.localIcon?.takeIf(String::isNotEmpty), it.siteUrl, counts[it.id] ?: 0) }
@@ -107,16 +111,33 @@ class HomeState(graph: AppGraph, scope: CoroutineScope) {
     }.stateIn(scope, SharingStarted.Eagerly, HomeModel(FilterMode.UNREAD, 0, emptyList(), emptyList(), loaded = false))
 }
 
+/** 一个账号的首页：全部未读/星标/文章、文件夹和订阅源。长按订阅源 → 编辑、取消订阅（[onEditFeed]）。 */
 @Composable
-fun HomeScreen(onOpen: (ArticleSource, FilterMode) -> Unit, onSettings: () -> Unit, onSearch: () -> Unit, onAdd: () -> Unit) {
+fun HomeScreen(
+    onBack: () -> Unit,
+    onOpen: (ArticleSource, FilterMode) -> Unit,
+    onSearch: () -> Unit,
+    onAdd: () -> Unit,
+    onEditFeed: (String) -> Unit,
+) {
     val graph = Graph.get()
+    val session = LocalAccount.current
     val entry = LocalNavEntry.current
-    val state = entry.retain("home") { HomeState(graph, entry.scope) }
+    val state = entry.retain("home") { HomeState(session, entry.scope) }
     val model by state.model.collectAsStateWithLifecycle()
-    val sync by graph.sync.state.collectAsStateWithLifecycle()
-    val lastSync by graph.sync.lastSyncAt.collectAsStateWithLifecycle()
-    val account by graph.prefs.account.collectAsStateWithLifecycle()
+    val sync by session.sync.state.collectAsStateWithLifecycle()
+    val lastSync by session.sync.lastSyncAt.collectAsStateWithLifecycle()
+    val account by session.account.collectAsStateWithLifecycle()
     val settings by graph.prefs.settings.collectAsStateWithLifecycle()
+    val canManage = session.sync.canManageFeeds
+    val view = LocalView.current
+    // 长按订阅源：震一下，弹出编辑订阅源表单
+    val editFeed = { id: String ->
+        view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        onEditFeed(id)
+    }
+    // 下次启动直接进这个账号
+    LaunchedEffect(session.id) { graph.prefs.lastAccountId = session.id }
     // 设置 → 外观 → 显示数量：星标 / 未读 / 全部 三种筛选各自可以关掉数字
     val showCounts = when (model.filter) {
         FilterMode.STARRED -> settings.countStarred
@@ -127,11 +148,7 @@ fun HomeScreen(onOpen: (ArticleSource, FilterMode) -> Unit, onSettings: () -> Un
     val listState = rememberLazyListState()
     val colors = Runnel.colors
 
-    val title = remember(account) {
-        account?.description?.takeIf { it.isNotBlank() }
-            ?: account?.takeIf { it.isRemote }?.let { runCatching { java.net.URI(it.apiBase).host }.getOrNull() }
-            ?: "演示数据"
-    }
+    val title = account.displayName
     val subtitle = when (val s = sync) {
         is SyncState.Running -> s.message
         is SyncState.Failed -> "同步失败：${s.message}"
@@ -143,13 +160,13 @@ fun HomeScreen(onOpen: (ArticleSource, FilterMode) -> Unit, onSettings: () -> Un
         subtitleColor = if (sync is SyncState.Failed) colors.destructive else null,
         listState = listState,
         listModifier = Modifier.testTag("home_list"),
-        navigation = { BarButton(RunnelIcons.Settings, "设置", onClick = onSettings) },
+        navigation = { BarButton(RunnelIcons.Back, "账号", onClick = onBack) },
         actions = {
             BarButton(RunnelIcons.Search, "搜索", onClick = onSearch)
-            BarButton(RunnelIcons.Plus, "添加订阅", onClick = onAdd)
+            if (canManage) BarButton(RunnelIcons.Plus, "添加订阅", onClick = onAdd)
         },
         refreshing = sync is SyncState.Running,
-        onRefresh = { graph.sync.requestSync() },
+        onRefresh = { session.sync.requestSync() },
         bottomBar = { FilterBottomBar(model.filter, onChange = { state.filter.value = it }) },
     ) {
         item(key = "all", contentType = "source") {
@@ -169,7 +186,7 @@ fun HomeScreen(onOpen: (ArticleSource, FilterMode) -> Unit, onSettings: () -> Un
                     when (model.filter) {
                         FilterMode.UNREAD -> "没有未读文章"
                         FilterMode.STARRED -> "还没有星标文章"
-                        FilterMode.ALL -> "还没有订阅"
+                        FilterMode.ALL -> if (canManage) "还没有订阅，点右上角 + 添加" else "还没有订阅"
                     },
                     style = Runnel.type.subhead,
                     color = colors.secondaryLabel,
@@ -199,7 +216,9 @@ fun HomeScreen(onOpen: (ArticleSource, FilterMode) -> Unit, onSettings: () -> Un
                     if (open) {
                         for (feed in folder.feeds) {
                             item(key = "feed:${folder.id}:${feed.id}", contentType = "feed") {
-                                FeedRowView(feed, indent = true, showCount = showCounts, showFavicon = showFavicons) { onOpen(ArticleSource.Feed(feed.id, feed.title, feed.iconUrl), model.filter) }
+                                FeedRowView(feed, indent = true, showCount = showCounts, showFavicon = showFavicons, onLongClick = if (canManage) ({ editFeed(feed.id) }) else null) {
+                                    onOpen(ArticleSource.Feed(feed.id, feed.title, feed.iconUrl), model.filter)
+                                }
                             }
                         }
                     }
@@ -211,7 +230,9 @@ fun HomeScreen(onOpen: (ArticleSource, FilterMode) -> Unit, onSettings: () -> Un
                 item(key = "feeds_header", contentType = "header") { SectionHeader("订阅源", collapsed = null) {} }
                 for (feed in model.looseFeeds) {
                     item(key = "feed:${feed.id}", contentType = "feed") {
-                        FeedRowView(feed, indent = false, showCount = showCounts, showFavicon = showFavicons) { onOpen(ArticleSource.Feed(feed.id, feed.title, feed.iconUrl), model.filter) }
+                        FeedRowView(feed, indent = false, showCount = showCounts, showFavicon = showFavicons, onLongClick = if (canManage) ({ editFeed(feed.id) }) else null) {
+                            onOpen(ArticleSource.Feed(feed.id, feed.title, feed.iconUrl), model.filter)
+                        }
                     }
                 }
             }
@@ -281,9 +302,9 @@ private fun FolderRowView(folder: FolderRow, expanded: Boolean, showCount: Boole
 }
 
 @Composable
-private fun FeedRowView(feed: FeedRow, indent: Boolean, showCount: Boolean, showFavicon: Boolean, onClick: () -> Unit) {
+private fun FeedRowView(feed: FeedRow, indent: Boolean, showCount: Boolean, showFavicon: Boolean, onLongClick: (() -> Unit)?, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().pressHighlight(onClick).height(46.dp).padding(start = if (indent) 52.dp else 20.dp, end = 20.dp),
+        Modifier.fillMaxWidth().pressHighlight(onLongClick, onClick).height(46.dp).padding(start = if (indent) 52.dp else 20.dp, end = 20.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (showFavicon) {

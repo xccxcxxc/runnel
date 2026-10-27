@@ -17,23 +17,27 @@ import kotlinx.coroutines.Dispatchers
         ArticleContentEntity::class,
         PendingActionEntity::class,
         ArticleFts::class,
+        LocalFeedState::class,
+        LocalSeen::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
-    autoMigrations = [AutoMigration(from = 1, to = 2)],
+    autoMigrations = [AutoMigration(from = 1, to = 2), AutoMigration(from = 2, to = 3)],
 )
 abstract class RunnelDatabase : RoomDatabase() {
     abstract fun feedDao(): FeedDao
     abstract fun articleDao(): ArticleDao
     abstract fun pendingDao(): PendingDao
+    abstract fun localDao(): LocalDao
 
     companion object {
         /**
          * 用系统自带的 SQLite（不打包自己的，省 1.9 MB）。数据库相关的测试在模拟器上跑（app/src/androidTest），
          * 和手机是同一种引擎。数据库文件格式通用，#29–#31 用自带 SQLite 建的 runnel.db 直接打开。
+         * 每个账号一个数据库文件（[name] 见 [io.github.xccxcxxc.runnel.data.Account.dbName]）。
          */
-        fun create(context: Context): RunnelDatabase =
-            Room.databaseBuilder(context, RunnelDatabase::class.java, "runnel.db")
+        fun create(context: Context, name: String): RunnelDatabase =
+            Room.databaseBuilder(context, RunnelDatabase::class.java, name)
                 .setQueryCoroutineContext(Dispatchers.IO)
                 // WAL：同步写库时，列表读库不被阻塞
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)

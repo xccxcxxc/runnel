@@ -120,3 +120,17 @@ object DemoData {
     private fun sentence(rnd: Random, words: List<String>, min: Int, max: Int, sep: String): String =
         (0 until rnd.nextInt(min, max)).joinToString(sep) { words[rnd.nextInt(words.size)] }
 }
+
+/** 演示账号：“同步”只是加几篇随机文章，不能管理订阅。 */
+class DemoBackend(private val db: RunnelDatabase) : AccountBackend {
+    override val canManageFeeds get() = false
+    override val findsIcons get() = false
+
+    override suspend fun sync(progress: (String) -> Unit): Int = DemoData.addFresh(db, 3)
+
+    override suspend fun addFeed(input: String, folder: FolderRef?) = throw FeedException("演示数据不能添加订阅")
+
+    override suspend fun editFeed(feed: FeedEntity, title: String, folder: FolderRef?) = throw FeedException("演示数据不能修改订阅")
+
+    override suspend fun unsubscribe(feed: FeedEntity) = throw FeedException("演示数据不能取消订阅")
+}

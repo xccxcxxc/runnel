@@ -22,16 +22,19 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import io.github.xccxcxxc.runnel.data.SyncMode
+import androidx.compose.runtime.CompositionLocalProvider
+import io.github.xccxcxxc.runnel.data.Account
 import io.github.xccxcxxc.runnel.perf.PerfMonitor
 import io.github.xccxcxxc.runnel.perf.RefreshRate
-import io.github.xccxcxxc.runnel.sync.SyncState
 import io.github.xccxcxxc.runnel.ui.components.SheetHost
 import io.github.xccxcxxc.runnel.ui.components.SheetState
 import io.github.xccxcxxc.runnel.ui.components.behindSheet
+import io.github.xccxcxxc.runnel.ui.home.AccountsScreen
 import io.github.xccxcxxc.runnel.ui.home.AddFeedSheet
+import io.github.xccxcxxc.runnel.ui.home.EditFeedSheet
 import io.github.xccxcxxc.runnel.ui.home.HomeScreen
 import io.github.xccxcxxc.runnel.ui.list.ArticleListScreen
+import io.github.xccxcxxc.runnel.ui.login.AddAccountScreen
 import io.github.xccxcxxc.runnel.ui.login.LoginScreen
 import io.github.xccxcxxc.runnel.ui.nav.NavHost
 import io.github.xccxcxxc.runnel.ui.nav.Navigator
@@ -59,8 +62,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        // 同步方式为“手动”时不自动同步
-        if (Graph.get().prefs.settings.value.syncMode != SyncMode.MANUAL) Graph.get().sync.syncIfStale()
+        // 同步方式为“手动”的账号不自动同步
+        Graph.get().syncAllIfStale()
     }
 
     override fun onResume() {
@@ -92,12 +95,14 @@ private fun RunnelRoot(activity: MainActivity, autoDemo: Boolean) {
         PerfMonitor.updateRefreshRate(activity)
     }
     // 帧统计：卡顿时是否正在同步
-    LaunchedEffect(Unit) { graph.sync.state.collect { PerfMonitor.setSyncing(it is SyncState.Running) } }
+    LaunchedEffect(Unit) { graph.anySyncing.collect { PerfMonitor.setSyncing(it) } }
 
     RunnelTheme(settings) {
         val scope = rememberCoroutineScope()
         val navigator = remember {
-            Navigator(if (graph.prefs.account.value == null) Route.Login else Route.Home, scope)
+            // 有账号时进上次打开的账号的首页，下面垫着账号列表（照 Reeder，返回就到账号列表）
+            val start = graph.startAccount()
+            Navigator(if (start == null) listOf(Route.AddAccount) else listOf(Route.Accounts, Route.Home(start.id)), scope)
         }
         val sheet = remember { SheetState<Sheet>(scope) }
         val dark = Runnel.colors.isDark
@@ -111,12 +116,14 @@ private fun RunnelRoot(activity: MainActivity, autoDemo: Boolean) {
         LaunchedEffect(navigator.top, sheet.content) {
             PerfMonitor.setScreen(
                 when (sheet.content) {
-                    Sheet.SETTINGS -> "Settings"
-                    Sheet.ADD_FEED -> "AddFeed"
+                    Sheet.Settings -> "Settings"
+                    is Sheet.AddFeed, is Sheet.EditFeed -> "AddFeed"
                     null -> navigator.top.route.perfName
                 },
             )
         }
+        // 账号加好了：账号列表垫底，进它的首页
+        fun opened(account: Account) = navigator.replaceAll(Route.Accounts, Route.Home(account.id))
         Box(
             Modifier
                 .fillMaxSize()
@@ -126,44 +133,86 @@ private fun RunnelRoot(activity: MainActivity, autoDemo: Boolean) {
         ) {
             Box(Modifier.fillMaxSize().behindSheet(sheet)) {
                 NavHost(navigator) { entry ->
-                    when (val route = entry.route) {
-                        Route.Login -> LoginScreen(autoDemo) { navigator.replaceAll(Route.Home) }
-                        Route.Home -> HomeScreen(
-                            onOpen = { source, filter -> navigator.push(Route.Articles(source, filter)) },
-                            onSettings = { sheet.show(Sheet.SETTINGS) },
-                            onSearch = { navigator.push(Route.Search) },
-                            onAdd = { sheet.show(Sheet.ADD_FEED) },
-                        )
-                        is Route.Articles -> ArticleListScreen(
-                            source = route.source,
-                            filter = route.filter,
-                            onBack = navigator::pop,
-                            onOpenArticle = { navigator.push(Route.Reader(it)) },
-                            onReplace = { source, filter -> navigator.replaceTop(Route.Articles(source, filter)) },
-                        )
-                        is Route.Reader -> ReaderScreen(route.session, onBack = navigator::pop)
-                        Route.Search -> SearchScreen(
-                            onBack = navigator::pop,
-                            onOpenArticle = { navigator.push(Route.Reader(it)) },
-                        )
+                    val route = entry.route
+                    val accountId = route.accountId
+                    if (accountId == null) {
+                        when (route) {
+                            Route.AddAccount -> AddAccountScreen(
+                                autoDemo = autoDemo,
+                                canGoBack = navigator.stack.firstOrNull()?.route != Route.AddAccount,
+                                onBack = navigator::pop,
+                                onServer = { navigator.push(Route.Login(it)) },
+                                onAdded = ::opened,
+                            )
+                            is Route.Login -> LoginScreen(route.type, onBack = navigator::pop, onAdded = ::opened)
+                            Route.Accounts -> AccountsScreen(
+                                onOpen = { navigator.push(Route.Home(it)) },
+                                onSettings = { sheet.show(Sheet.Settings) },
+                                onAdd = { navigator.push(Route.AddAccount) },
+                            )
+                            else -> Unit
+                        }
+                        return@NavHost
+                    }
+                    // 账号刚被移除、页面还没出栈的那一帧：什么都不画
+                    val session = remember(accountId) { graph.session(accountId) } ?: return@NavHost
+                    CompositionLocalProvider(LocalAccount provides session) {
+                        when (route) {
+                            is Route.Home -> HomeScreen(
+                                onBack = navigator::pop,
+                                onOpen = { source, filter -> navigator.push(Route.Articles(accountId, source, filter)) },
+                                onSearch = { navigator.push(Route.Search(accountId)) },
+                                onAdd = { sheet.show(Sheet.AddFeed(accountId)) },
+                                onEditFeed = { sheet.show(Sheet.EditFeed(accountId, it)) },
+                            )
+                            is Route.Articles -> ArticleListScreen(
+                                source = route.source,
+                                filter = route.filter,
+                                onBack = navigator::pop,
+                                onOpenArticle = { navigator.push(Route.Reader(accountId, it)) },
+                                onReplace = { source, filter -> navigator.replaceTop(Route.Articles(accountId, source, filter)) },
+                            )
+                            is Route.Reader -> ReaderScreen(route.session, onBack = navigator::pop)
+                            is Route.Search -> SearchScreen(
+                                onBack = navigator::pop,
+                                onOpenArticle = { navigator.push(Route.Reader(accountId, it)) },
+                            )
+                            else -> Unit
+                        }
                     }
                 }
             }
             SheetHost(sheet) { kind ->
                 when (kind) {
-                    Sheet.SETTINGS -> SettingsSheet(
+                    Sheet.Settings -> SettingsSheet(
                         onDone = { sheet.dismiss() },
-                        onLoggedOut = {
+                        onAddAccount = {
+                            sheet.dismiss()
+                            navigator.push(Route.AddAccount)
+                        },
+                        onRemoveAccount = { id ->
+                            // 先离开这个账号的页面、收起表单，再删它的数据库
                             sheet.hideNow()
-                            navigator.replaceAll(Route.Login)
+                            val rest = graph.accounts.value.filter { it.id != id }
+                            if (rest.isEmpty()) navigator.replaceAll(Route.AddAccount) else navigator.replaceAll(Route.Accounts)
+                            graph.removeAccount(id)
                         },
                     )
-                    Sheet.ADD_FEED -> AddFeedSheet(onDone = { sheet.dismiss() })
+                    is Sheet.AddFeed -> graph.session(kind.accountId)?.let { s ->
+                        CompositionLocalProvider(LocalAccount provides s) { AddFeedSheet(onDone = { sheet.dismiss() }) }
+                    }
+                    is Sheet.EditFeed -> graph.session(kind.accountId)?.let { s ->
+                        CompositionLocalProvider(LocalAccount provides s) { EditFeedSheet(kind.feedId, onDone = { sheet.dismiss() }) }
+                    }
                 }
             }
         }
     }
 }
 
-/** 从底部弹出的表单（设置、添加订阅都是表单，不是推入的页面）。 */
-private enum class Sheet { SETTINGS, ADD_FEED }
+/** 从底部弹出的表单（设置、添加/编辑订阅都是表单，不是推入的页面）。 */
+private sealed interface Sheet {
+    data object Settings : Sheet
+    data class AddFeed(val accountId: String) : Sheet
+    data class EditFeed(val accountId: String, val feedId: String) : Sheet
+}

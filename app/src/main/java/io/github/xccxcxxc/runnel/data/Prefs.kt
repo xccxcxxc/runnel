@@ -8,28 +8,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-enum class AccountType(val label: String) {
-    FRESHRSS("FreshRSS"),
-    MINIFLUX("Miniflux"),
-    GREADER("Google Reader API"),
-    DEMO("演示数据"),
-}
-
-@Immutable
-data class Account(
-    val type: AccountType,
-    /** 已规范化的 GReader API 根地址（不含 /reader/api/0）。演示账号为空。 */
-    val apiBase: String,
-    val username: String,
-    /** 用户给账号起的名字（首页大标题）；空 = 用服务器主机名。 */
-    val description: String = "",
-) {
-    val isRemote: Boolean get() = type != AccountType.DEMO
-}
-
-/** “保留已读文章”能选的值（天；-1 一直保留，0 不保留）。 */
-val KEEP_DAYS_OPTIONS = listOf(-1, 0, 1, 2, 3, 7, 14, 30)
-
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
 /** 点链接怎么打开：系统默认浏览器 / 应用内的浏览器标签页（Custom Tabs）。 */
@@ -70,11 +48,6 @@ enum class ImagePreview { NONE, SMALL, MEDIUM, LARGE }
 data class Settings(
     val theme: ThemeMode = ThemeMode.SYSTEM,
     // 阅读
-    val readerView: ReaderView = ReaderView.DEFAULT,
-    /** 默认用 Reader View（自动抓全文）打开的订阅源 id。 */
-    val readerViewFeeds: Set<String> = emptySet(),
-    /** 同步后预先下载正文图片（离线阅读）的订阅源 id（设置 → 账号 → 离线图片）。 */
-    val offlineImageFeeds: Set<String> = emptySet(),
     val autoHideBars: Boolean = true,
     val coloredLinks: Boolean = false,
     val highContrast: Boolean = false,
@@ -87,11 +60,6 @@ data class Settings(
     val titleBold: Boolean = true,
     val titleUppercase: Boolean = false,
     val titleCenter: Boolean = false,
-    // 账号
-    val syncMode: SyncMode = SyncMode.BACKGROUND,
-    /** 已读文章保留天数：-1 = 一直保留，0 = 不保留（下次同步清掉），其余为天数。 */
-    val keepDays: Int = 30,
-    val sortSubs: SortSubs = SortSubs.FOLDERS_FIRST,
     // 手势
     val swipeRight: SwipeKind = SwipeKind.TOGGLE_READ,
     val swipeLeft: SwipeKind = SwipeKind.TOGGLE_STAR,
@@ -105,8 +73,6 @@ data class Settings(
     val animListLoad: Boolean = true,
     // 通用
     val openLinks: OpenLinks = OpenLinks.DEFAULT_BROWSER,
-    val markReadOnOpen: Boolean = true,
-    val markReadOnScroll: Boolean = false,
     val oldestFirstUnread: Boolean = true,
     val groupBy: GroupBy = GroupBy.DATE,
     val autoNextFeed: Boolean = false,
@@ -131,79 +97,101 @@ data class Settings(
     // 手感
     val iosFling: Boolean = true,
     val maxRefreshRate: Boolean = true,
-    // 同步
-    /** 后台同步间隔（分钟），只在同步方式为“后台刷新”时用。 */
-    val syncIntervalMinutes: Int = 60,
-) {
-    /** 这个订阅源的文章是否默认用 Reader View（全文）打开；旧版全局 Readability 等于全选。 */
-    fun autoReaderView(feedId: String): Boolean = readerView == ReaderView.READABILITY || feedId in readerViewFeeds
-}
+)
 
 /**
  * 账号和设置都放 SharedPreferences（量小，读一次进内存），对外暴露 StateFlow。
- * 账号单独放 `account` 文件，不进系统备份（`res/xml/backup_rules.xml`、`data_extraction_rules.xml`）；
+ * 账号列表单独放 `account` 文件，不进系统备份（`res/xml/backup_rules.xml`、`data_extraction_rules.xml`）；
  * 密码只在登录时用一次、不保存，服务器发的 token 用 [SecretBox]（Android Keystore）加密后保存。
+ * 每个账号的设置和同步进度在各自的 [AccountPrefs] 文件里，这里的 [settings] 是全 App 共用的。
+ *
+ * `account` 文件里：`ids` = 账号 id（逗号分隔，按添加顺序），`last` = 上次打开的账号，
+ * 每个账号的字段是 `<id>.type` / `.base` / `.user` / `.desc` / `.db` / `.token`。
  */
-class Prefs(context: Context) {
+class Prefs(private val context: Context) {
     private val sp: SharedPreferences = context.getSharedPreferences("runnel", Context.MODE_PRIVATE)
     private val acc: SharedPreferences = context.getSharedPreferences(ACCOUNT_FILE, Context.MODE_PRIVATE)
 
-    /** 解密后的 token，第一次 [authToken] 时填上。 */
-    @Volatile private var cachedToken: String? = null
+    /** 解密后的 token（按账号 id），第一次 [authToken] 时填上。 */
+    private val cachedTokens = HashMap<String, String>()
+    private val accountPrefs = HashMap<String, AccountPrefs>()
+
+    /** 这次启动刚从单账号版本升级上来（旧的后台同步任务要换掉）。 */
+    var upgradedToMultiAccount = false
+        private set
 
     init {
         migrateLegacyAccount()
+        migrateToMultiAccount()
     }
 
-    private val _account = MutableStateFlow(readAccount())
-    val account: StateFlow<Account?> = _account.asStateFlow()
+    private val _accounts = MutableStateFlow(readAccounts())
+    val accounts: StateFlow<List<Account>> = _accounts.asStateFlow()
 
     private val _settings = MutableStateFlow(readSettings())
     val settings: StateFlow<Settings> = _settings.asStateFlow()
 
-    var lastSyncAt: Long
-        get() = sp.getLong("lastSyncAt", 0L)
-        set(value) = sp.edit { putLong("lastSyncAt", value) }
+    /** 上次打开的账号（启动时直接进它的首页）。 */
+    var lastAccountId: String?
+        get() = acc.getString("last", null)
+        set(value) = acc.edit { putString("last", value) }
 
-    /** 上次同步时服务端时间（秒），增量拉取用 `ot` 参数。 */
-    var lastSyncServerSec: Long
-        get() = sp.getLong("lastSyncServerSec", 0L)
-        set(value) = sp.edit { putLong("lastSyncServerSec", value) }
+    fun account(id: String): Account? = _accounts.value.firstOrNull { it.id == id }
 
-    /** 登录成功后保存账号和服务器发的 token（加密）；null = 退出登录，同时清掉同步进度。 */
-    fun saveAccount(account: Account?, authToken: String = "") {
-        val encrypted = if (account == null) "" else SecretBox.encrypt(authToken)
-        acc.edit(commit = true) {
-            clear()
-            if (account != null) {
-                putString("type", account.type.name)
-                putString("base", account.apiBase)
-                putString("user", account.username)
-                putString("desc", account.description)
-                putString("token", encrypted)
-            }
-        }
-        if (account == null) sp.edit { remove("lastSyncAt"); remove("lastSyncServerSec") }
-        synchronized(this) { cachedToken = authToken.takeIf { account != null } }
-        _account.value = account
+    /** 这个账号的设置和同步进度。 */
+    fun accountPrefs(id: String): AccountPrefs = synchronized(accountPrefs) {
+        accountPrefs.getOrPut(id) { AccountPrefs(context.getSharedPreferences(AccountPrefs.fileName(id), Context.MODE_PRIVATE)) }
     }
 
+    /** 新加一个账号（登录成功后，带服务器发的 token），返回它。 */
+    fun addAccount(type: AccountType, apiBase: String, username: String, authToken: String = ""): Account {
+        val id = newId()
+        val account = Account(id, type, apiBase, username, dbName = "account-$id.db")
+        val encrypted = if (authToken.isEmpty()) "" else SecretBox.encrypt(authToken)
+        val ids = _accounts.value.map { it.id } + id
+        acc.edit(commit = true) {
+            putString("$id.type", type.name)
+            putString("$id.base", apiBase)
+            putString("$id.user", username)
+            putString("$id.desc", "")
+            putString("$id.db", account.dbName)
+            putString("$id.token", encrypted)
+            putString("ids", ids.joinToString(","))
+            putString("last", id)
+        }
+        synchronized(cachedTokens) { cachedTokens[id] = authToken }
+        _accounts.value = _accounts.value + account
+        return account
+    }
+
+    /** 删掉账号记录和它的设置文件（数据库由调用方先关闭、删除）。 */
+    fun removeAccount(id: String) {
+        val ids = _accounts.value.map { it.id } - id
+        acc.edit(commit = true) {
+            listOf("type", "base", "user", "desc", "db", "token").forEach { remove("$id.$it") }
+            putString("ids", ids.joinToString(","))
+            if (acc.getString("last", null) == id) remove("last")
+        }
+        synchronized(cachedTokens) { cachedTokens.remove(id) }
+        synchronized(accountPrefs) { accountPrefs.remove(id) }
+        context.deleteSharedPreferences(AccountPrefs.fileName(id))
+        _accounts.value = _accounts.value.filter { it.id != id }
+    }
 
     /**
-     * 当前账号的 token，第一次用时才解密（不放在启动路径上）。
-     * 解不开（例如系统备份恢复到了新设备）返回空串，服务器会报认证失败，退出后重新登录即可。
+     * 账号的 token，第一次用时才解密（不放在启动路径上）。
+     * 解不开（例如系统备份恢复到了新设备）返回空串，服务器会报认证失败，移除账号后重新登录即可。
      */
-    fun authToken(): String {
-        cachedToken?.let { return it }
-        return synchronized(this) {
-            cachedToken ?: (SecretBox.decrypt(acc.getString("token", "") ?: "") ?: "").also { cachedToken = it }
-        }
+    fun authToken(id: String): String {
+        synchronized(cachedTokens) { cachedTokens[id]?.let { return it } }
+        val token = SecretBox.decrypt(acc.getString("$id.token", "") ?: "") ?: ""
+        synchronized(cachedTokens) { cachedTokens[id] = token }
+        return token
     }
 
-    fun setAccountDescription(text: String) {
-        val a = _account.value ?: return
-        acc.edit { putString("desc", text.trim()) }
-        _account.value = a.copy(description = text.trim())
+    fun setAccountDescription(id: String, text: String) {
+        acc.edit { putString("$id.desc", text.trim()) }
+        _accounts.value = _accounts.value.map { if (it.id == id) it.copy(description = text.trim()) else it }
     }
 
     /**
@@ -226,13 +214,44 @@ class Prefs(context: Context) {
         }
     }
 
+    /**
+     * 单账号版本（`account` 文件里直接是 type/base/user/desc/token）升级成多账号：
+     * 这个账号拿一个 id，数据库沿用 runnel.db（不搬文件），token 原样保留（已经加密）；
+     * 原来放在全局设置里的账号设置（同步方式、保留已读、Reader View、离线图片……）和同步进度搬进它自己的设置文件。
+     */
+    private fun migrateToMultiAccount() {
+        if (acc.contains("ids")) return
+        val type = acc.getString("type", null)?.let { runCatching { AccountType.valueOf(it) }.getOrNull() }
+        if (type == null) {
+            acc.edit(commit = true) { putString("ids", "") }
+            return
+        }
+        val id = newId()
+        // 先写账号设置，再写账号记录：中途被杀的话下次启动重新迁移，不会出现有账号没设置
+        val target = context.getSharedPreferences(AccountPrefs.fileName(id), Context.MODE_PRIVATE)
+        AccountPrefs.write(target, AccountPrefs.read(sp), commit = true)
+        target.edit(commit = true) {
+            putLong("lastSyncAt", sp.getLong("lastSyncAt", 0L))
+            putLong("lastSyncServerSec", sp.getLong("lastSyncServerSec", 0L))
+        }
+        acc.edit(commit = true) {
+            putString("$id.type", type.name)
+            putString("$id.base", acc.getString("base", "") ?: "")
+            putString("$id.user", acc.getString("user", "") ?: "")
+            putString("$id.desc", acc.getString("desc", "") ?: "")
+            putString("$id.db", LEGACY_DB)
+            putString("$id.token", acc.getString("token", "") ?: "")
+            listOf("type", "base", "user", "desc", "token").forEach { remove(it) }
+            putString("ids", id)
+            putString("last", id)
+        }
+        upgradedToMultiAccount = true
+    }
+
     fun updateSettings(transform: (Settings) -> Settings) {
         val s = transform(_settings.value)
         sp.edit {
             putString("theme", s.theme.name)
-            putString("readerView", s.readerView.name)
-            putStringSet("readerViewFeeds", s.readerViewFeeds)
-            putStringSet("offlineImageFeeds", s.offlineImageFeeds)
             putBoolean("autoHideBars", s.autoHideBars)
             putBoolean("coloredLinks", s.coloredLinks)
             putBoolean("highContrast", s.highContrast)
@@ -246,8 +265,6 @@ class Prefs(context: Context) {
             putBoolean("titleUppercase", s.titleUppercase)
             putBoolean("titleCenter", s.titleCenter)
             putString("openLinks", s.openLinks.name)
-            putBoolean("markReadOnOpen", s.markReadOnOpen)
-            putBoolean("markReadOnScroll", s.markReadOnScroll)
             putBoolean("oldestFirstUnread", s.oldestFirstUnread)
             putString("groupBy", s.groupBy.name)
             putBoolean("autoNextFeed", s.autoNextFeed)
@@ -266,10 +283,6 @@ class Prefs(context: Context) {
             putBoolean("textPreview", s.textPreview)
             putBoolean("iosFling", s.iosFling)
             putBoolean("maxRefreshRate", s.maxRefreshRate)
-            putInt("syncIntervalMinutes", s.syncIntervalMinutes)
-            putInt("keepDays", s.keepDays)
-            putString("syncMode", s.syncMode.name)
-            putString("sortSubs", s.sortSubs.name)
             putString("swipeRight", s.swipeRight.name)
             putString("swipeLeft", s.swipeLeft.name)
             putString("pullBottom", s.pullBottom.name)
@@ -281,16 +294,19 @@ class Prefs(context: Context) {
         _settings.value = s
     }
 
-    private fun readAccount(): Account? {
-        val type = acc.getString("type", null)?.let { runCatching { AccountType.valueOf(it) }.getOrNull() }
-            ?: return null
-        return Account(
-            type = type,
-            apiBase = acc.getString("base", "") ?: "",
-            username = acc.getString("user", "") ?: "",
-            description = acc.getString("desc", "") ?: "",
-        )
-    }
+    private fun readAccounts(): List<Account> =
+        (acc.getString("ids", "") ?: "").split(',').filter { it.isNotEmpty() }.mapNotNull { id ->
+            val type = acc.getString("$id.type", null)?.let { runCatching { AccountType.valueOf(it) }.getOrNull() }
+                ?: return@mapNotNull null
+            Account(
+                id = id,
+                type = type,
+                apiBase = acc.getString("$id.base", "") ?: "",
+                username = acc.getString("$id.user", "") ?: "",
+                description = acc.getString("$id.desc", "") ?: "",
+                dbName = acc.getString("$id.db", null) ?: "account-$id.db",
+            )
+        }
 
     private inline fun <reified E : Enum<E>> enumOf(key: String, default: E): E =
         sp.getString(key, null)?.let { name -> enumValues<E>().firstOrNull { it.name == name } } ?: default
@@ -299,9 +315,6 @@ class Prefs(context: Context) {
         val d = Settings()
         return Settings(
             theme = enumOf("theme", d.theme),
-            readerView = enumOf("readerView", d.readerView),
-            readerViewFeeds = sp.getStringSet("readerViewFeeds", null)?.toSet() ?: d.readerViewFeeds,
-            offlineImageFeeds = sp.getStringSet("offlineImageFeeds", null)?.toSet() ?: d.offlineImageFeeds,
             autoHideBars = sp.getBoolean("autoHideBars", d.autoHideBars),
             coloredLinks = sp.getBoolean("coloredLinks", d.coloredLinks),
             highContrast = sp.getBoolean("highContrast", d.highContrast),
@@ -317,8 +330,6 @@ class Prefs(context: Context) {
             titleUppercase = sp.getBoolean("titleUppercase", d.titleUppercase),
             titleCenter = sp.getBoolean("titleCenter", d.titleCenter),
             openLinks = enumOf("openLinks", d.openLinks),
-            markReadOnOpen = sp.getBoolean("markReadOnOpen", d.markReadOnOpen),
-            markReadOnScroll = sp.getBoolean("markReadOnScroll", d.markReadOnScroll),
             oldestFirstUnread = sp.getBoolean("oldestFirstUnread", d.oldestFirstUnread),
             groupBy = enumOf("groupBy", d.groupBy),
             autoNextFeed = sp.getBoolean("autoNextFeed", d.autoNextFeed),
@@ -337,12 +348,6 @@ class Prefs(context: Context) {
             textPreview = sp.getBoolean("textPreview", d.textPreview),
             iosFling = sp.getBoolean("iosFling", d.iosFling),
             maxRefreshRate = sp.getBoolean("maxRefreshRate", d.maxRefreshRate),
-            // 旧版本里“后台同步”间隔 0 = 关闭，对应现在的“启动时”
-            syncMode = if (sp.contains("syncMode")) enumOf("syncMode", d.syncMode)
-            else if (sp.getInt("syncIntervalMinutes", d.syncIntervalMinutes) == 0) SyncMode.ON_START else SyncMode.BACKGROUND,
-            syncIntervalMinutes = sp.getInt("syncIntervalMinutes", d.syncIntervalMinutes).takeIf { it > 0 } ?: d.syncIntervalMinutes,
-            keepDays = sp.getInt("keepDays", d.keepDays).takeIf { it in KEEP_DAYS_OPTIONS } ?: d.keepDays,
-            sortSubs = enumOf("sortSubs", d.sortSubs),
             swipeRight = enumOf("swipeRight", d.swipeRight),
             swipeLeft = enumOf("swipeLeft", d.swipeLeft),
             // 旧版是开关 pullBottomMarkAll（开 = 全部标为已读）
@@ -358,5 +363,10 @@ class Prefs(context: Context) {
     companion object {
         /** 账号所在的 SharedPreferences 文件名；备份规则里按 `account.xml` 排除。 */
         const val ACCOUNT_FILE = "account"
+
+        /** 升级到多账号前唯一那个账号的数据库。 */
+        const val LEGACY_DB = "runnel.db"
+
+        private fun newId(): String = java.util.UUID.randomUUID().toString().replace("-", "").take(12)
     }
 }

@@ -93,7 +93,7 @@ class GReaderApiTest {
         server.enqueue(MockResponse(body = """{"numResults":0}"""))
         val api = api()
         assertEquals("feed/42", api.quickAdd("https://a.example/"))
-        api.moveSubscription("feed/42", "user/-/label/Tech")
+        api.editSubscription("feed/42", addLabel = "user/-/label/Tech")
         assertEquals(null, api.quickAdd("https://nothing.example/"))
         server.takeRequest() // token
         val add = server.takeRequest()
@@ -101,6 +101,25 @@ class GReaderApiTest {
         assert(add.body!!.utf8().contains("quickadd=https%3A%2F%2Fa.example%2F")) { add.body!!.utf8() }
         val edit = server.takeRequest().body!!.utf8()
         assert(edit.contains("ac=edit") && edit.contains("s=feed%2F42") && edit.contains("a=user%2F-%2Flabel%2FTech")) { edit }
+        assert(!edit.contains("t=") && !edit.contains("r=")) { edit }
+    }
+
+    @Test
+    fun renameMoveAndUnsubscribe() = runTest {
+        server.enqueue(MockResponse(body = "wt"))
+        server.enqueue(MockResponse(body = "OK"))
+        server.enqueue(MockResponse(body = "OK"))
+        val api = api()
+        api.editSubscription("feed/7", title = "新名字", addLabel = "user/-/label/B", removeLabel = "user/-/label/A")
+        api.unsubscribe("feed/7")
+        server.takeRequest() // token
+        val edit = server.takeRequest()
+        assertEquals("/api/greader.php/reader/api/0/subscription/edit", edit.url.encodedPath)
+        val e = edit.body!!.utf8()
+        assert(e.contains("ac=edit") && e.contains("s=feed%2F7") && e.contains("t=%E6%96%B0%E5%90%8D%E5%AD%97")) { e }
+        assert(e.contains("a=user%2F-%2Flabel%2FB") && e.contains("r=user%2F-%2Flabel%2FA") && e.contains("T=wt")) { e }
+        val un = server.takeRequest().body!!.utf8()
+        assert(un.contains("ac=unsubscribe") && un.contains("s=feed%2F7")) { un }
     }
 
     @Test
@@ -114,7 +133,7 @@ class GReaderApiTest {
 
     @Test
     fun rebaseIcons() {
-        val r = io.github.xccxcxxc.runnel.sync.SyncEngine.Companion::rebaseIcon
+        val r = io.github.xccxcxxc.runnel.sync.greader.GReaderBackend.Companion::rebaseIcon
         assertEquals("https://mflux.example.xyz/feed-icon/abc", r("http://localhost/feed-icon/abc", "https://mflux.example.xyz"))
         assertEquals("https://h.example/rss/feed-icon/abc", r("http://localhost:8080/feed-icon/abc", "https://h.example/rss/"))
         assertEquals("https://f.example/f.php?h=1", r("http://localhost/f.php?h=1", "https://f.example/api/greader.php"))

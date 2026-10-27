@@ -110,15 +110,27 @@ class GReaderApi(
         return Regex("\"streamId\"\\s*:\\s*\"([^\"]+)\"").find(text)?.groupValues?.get(1)?.takeIf(String::isNotBlank)
     }
 
-    /** 把订阅移进文件夹；[label] 是文件夹的流 id（如 `user/-/label/科技`），服务端没有时会新建。 */
-    suspend fun moveSubscription(streamId: String, label: String) {
+    /**
+     * 改订阅：[title] 改名，[addLabel] 移进文件夹（文件夹的流 id，如 `user/-/label/科技`，服务端没有时会新建），
+     * [removeLabel] 移出原来的文件夹。都为 null 时什么都不做。
+     */
+    suspend fun editSubscription(streamId: String, title: String? = null, addLabel: String? = null, removeLabel: String? = null) {
+        if (title == null && addLabel == null && removeLabel == null) return
         postWithToken("reader/api/0/subscription/edit") {
             add("ac", "edit")
             add("s", streamId)
-            add("a", label)
+            if (title != null) add("t", title)
+            if (addLabel != null) add("a", addLabel)
+            if (removeLabel != null) add("r", removeLabel)
         }
     }
 
+    suspend fun unsubscribe(streamId: String) {
+        postWithToken("reader/api/0/subscription/edit") {
+            add("ac", "unsubscribe")
+            add("s", streamId)
+        }
+    }
 
     private suspend fun postWithToken(path: String, fill: FormBody.Builder.() -> Unit): String {
         repeat(2) { attempt ->

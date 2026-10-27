@@ -43,6 +43,10 @@ object RunnelIcons {
     )
     val AlignLeft = stroke("align-left", "M5 6.5 H19", "M5 10.5 H14", "M5 14.5 H19", "M5 18.5 H14", width = 2f)
     val AlignCenter = stroke("align-center", "M5 6.5 H19", "M8.5 10.5 H15.5", "M5 14.5 H19", "M8.5 18.5 H15.5", width = 2f)
+    /** 账号类型：服务器 / 本机 / 演示数据。 */
+    val Server = stroke("server", "M5 4.5 H19 A1 1 0 0 1 20 5.5 V10 A1 1 0 0 1 19 11 H5 A1 1 0 0 1 4 10 V5.5 A1 1 0 0 1 5 4.5 Z", "M5 13 H19 A1 1 0 0 1 20 14 V18.5 A1 1 0 0 1 19 19.5 H5 A1 1 0 0 1 4 18.5 V14 A1 1 0 0 1 5 13 Z", "M7.5 7.75 H8", "M7.5 16.25 H8")
+    val Device = stroke("device", "M8 3 H16 A1.5 1.5 0 0 1 17.5 4.5 V19.5 A1.5 1.5 0 0 1 16 21 H8 A1.5 1.5 0 0 1 6.5 19.5 V4.5 A1.5 1.5 0 0 1 8 3 Z", "M11 18 H13")
+    val Sparkle = stroke("sparkle", "M12 3.5 L13.8 10.2 L20.5 12 L13.8 13.8 L12 20.5 L10.2 13.8 L3.5 12 L10.2 10.2 Z")
     val Plus = stroke("plus", "M12 5 V19", "M5 12 H19", width = 2.1f)
     val Close = stroke("close", "M6.5 6.5 L17.5 17.5", "M17.5 6.5 L6.5 17.5", width = 2.1f)
     val More = fill(

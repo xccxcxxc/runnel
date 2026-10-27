@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.github.xccxcxxc.runnel.BuildConfig
 import io.github.xccxcxxc.runnel.Graph
+import io.github.xccxcxxc.runnel.data.AccountType
 import io.github.xccxcxxc.runnel.data.AnimSpeed
 import io.github.xccxcxxc.runnel.data.AppFont
 import io.github.xccxcxxc.runnel.data.GroupBy
@@ -42,7 +43,7 @@ import io.github.xccxcxxc.runnel.data.ThemeMode
 import io.github.xccxcxxc.runnel.data.db.FeedEntity
 import io.github.xccxcxxc.runnel.perf.PerfMonitor
 import io.github.xccxcxxc.runnel.sync.Opml
-import io.github.xccxcxxc.runnel.sync.SyncWorker
+import io.github.xccxcxxc.runnel.ui.home.TextPrompt
 import io.github.xccxcxxc.runnel.ui.components.BarButton
 import io.github.xccxcxxc.runnel.ui.components.BarTextButton
 import io.github.xccxcxxc.runnel.ui.components.RunnelIcons
@@ -73,81 +74,81 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 
-/** 设置的各级页面。顶层是目录，点进去是二级页面（通用 / 外观 / 阅读 …）。 */
-private enum class SettingsPage(val title: String) {
-    ROOT("设置"),
-    ACCOUNT("账号"),
-    READER_VIEW("Reader View"),
-    OFFLINE_IMAGES("离线图片"),
-    GENERAL("通用"),
-    APPEARANCE("外观"),
-    READING("阅读"),
-    ANIMATIONS("动画"),
-    GESTURES("手势"),
-    PERFORMANCE("手感与性能"),
-    LICENSES("开源许可"),
+/** 设置的各级页面。顶层是目录，点进去是二级页面（账号 / 通用 / 外观 / 阅读 …）。账号相关的页面带账号 id。 */
+private sealed class SettingsPage(val title: String) {
+    data object Root : SettingsPage("设置")
+    data class AccountPage(val id: String) : SettingsPage("账号")
+    data class ReaderViewPage(val id: String) : SettingsPage("Reader View")
+    data class OfflineImagesPage(val id: String) : SettingsPage("离线图片")
+    data object General : SettingsPage("通用")
+    data object Appearance : SettingsPage("外观")
+    data object Reading : SettingsPage("阅读")
+    data object Animations : SettingsPage("动画")
+    data object Gestures : SettingsPage("手势")
+    data object Performance : SettingsPage("手感与性能")
+    data object Licenses : SettingsPage("开源许可")
 }
 
-/** 设置面板：从首页左上角打开，以底部表单的形式弹出（见 [io.github.xccxcxxc.runnel.ui.components.SheetHost]）。 */
+/** 设置面板：从账号列表左上角打开，以底部表单的形式弹出（见 [io.github.xccxcxxc.runnel.ui.components.SheetHost]）。 */
 @Composable
-fun SettingsSheet(onDone: () -> Unit, onLoggedOut: () -> Unit) {
+fun SettingsSheet(onDone: () -> Unit, onAddAccount: () -> Unit, onRemoveAccount: (String) -> Unit) {
     val scope = rememberCoroutineScope()
-    val pages = remember { SheetPages(SettingsPage.ROOT, scope) }
+    val pages = remember { SheetPages<SettingsPage>(SettingsPage.Root, scope) }
     SheetPageHost(pages) { page ->
         SheetPage(
             title = page.title,
-            subtitle = if (page == SettingsPage.ACCOUNT) Graph.get().prefs.account.value?.takeIf { it.isRemote }?.username else null,
-            leading = { if (page != SettingsPage.ROOT) BarButton(RunnelIcons.Back, "返回", onClick = pages::pop) },
+            subtitle = (page as? SettingsPage.AccountPage)?.let { Graph.get().prefs.account(it.id) }?.takeIf { it.isRemote }?.username,
+            leading = { if (page != SettingsPage.Root) BarButton(RunnelIcons.Back, "返回", onClick = pages::pop) },
             trailing = { BarTextButton("完成", color = Runnel.colors.accent, style = Runnel.type.headline, onClick = onDone) },
         ) {
             when (page) {
-                SettingsPage.ROOT -> rootPage(pages::push)
-                SettingsPage.ACCOUNT -> item(key = "account") { AccountPage(onLoggedOut, pages::push) }
-                SettingsPage.READER_VIEW -> item(key = "readerView") { ReaderViewPage() }
-                SettingsPage.OFFLINE_IMAGES -> item(key = "offlineImages") { OfflineImagesPage() }
-                SettingsPage.GENERAL -> item(key = "general") { GeneralPage() }
-                SettingsPage.APPEARANCE -> item(key = "appearance") { AppearancePage() }
-                SettingsPage.READING -> item(key = "reading") { ReadingPage() }
-                SettingsPage.ANIMATIONS -> item(key = "animations") { AnimationsPage() }
-                SettingsPage.GESTURES -> item(key = "gestures") { GesturesPage() }
-                SettingsPage.PERFORMANCE -> item(key = "performance") { PerformancePage() }
-                SettingsPage.LICENSES -> item(key = "licenses") { LicensesPage() }
+                SettingsPage.Root -> rootPage(pages::push, onAddAccount)
+                is SettingsPage.AccountPage -> item(key = "account") { AccountPage(page.id, onRemoveAccount, pages::push) }
+                is SettingsPage.ReaderViewPage -> item(key = "readerView") { ReaderViewPage(page.id) }
+                is SettingsPage.OfflineImagesPage -> item(key = "offlineImages") { OfflineImagesPage(page.id) }
+                SettingsPage.General -> item(key = "general") { GeneralPage() }
+                SettingsPage.Appearance -> item(key = "appearance") { AppearancePage() }
+                SettingsPage.Reading -> item(key = "reading") { ReadingPage() }
+                SettingsPage.Animations -> item(key = "animations") { AnimationsPage() }
+                SettingsPage.Gestures -> item(key = "gestures") { GesturesPage() }
+                SettingsPage.Performance -> item(key = "performance") { PerformancePage() }
+                SettingsPage.Licenses -> item(key = "licenses") { LicensesPage() }
             }
         }
     }
 }
 
-private fun LazyListScope.rootPage(open: (SettingsPage) -> Unit) {
+private fun LazyListScope.rootPage(open: (SettingsPage) -> Unit, onAddAccount: () -> Unit) {
     item(key = "account") {
-        val account by Graph.get().prefs.account.collectAsStateWithLifecycle()
-        val a = account
+        val accounts by Graph.get().prefs.accounts.collectAsStateWithLifecycle()
         GroupedSection("账号") {
-            NavRow(
-                a?.description?.takeIf { it.isNotBlank() } ?: a?.type?.label ?: "-",
-                value = a?.takeIf { it.isRemote }?.username,
-            ) { open(SettingsPage.ACCOUNT) }
+            for (a in accounts) {
+                NavRow(a.displayName, value = a.username.takeIf { a.isRemote }) { open(SettingsPage.AccountPage(a.id)) }
+                RowDivider()
+            }
+            GroupedRow("添加账号…", titleColor = Runnel.colors.accent, onClick = onAddAccount)
         }
     }
     item(key = "sections") {
         GroupedSection {
-            NavRow("通用") { open(SettingsPage.GENERAL) }
+            NavRow("通用") { open(SettingsPage.General) }
             RowDivider()
-            NavRow("外观") { open(SettingsPage.APPEARANCE) }
+            NavRow("外观") { open(SettingsPage.Appearance) }
             RowDivider()
-            NavRow("阅读") { open(SettingsPage.READING) }
+            NavRow("阅读") { open(SettingsPage.Reading) }
             RowDivider()
-            NavRow("动画") { open(SettingsPage.ANIMATIONS) }
+            NavRow("动画") { open(SettingsPage.Animations) }
             RowDivider()
-            NavRow("手势") { open(SettingsPage.GESTURES) }
+            NavRow("手势") { open(SettingsPage.Gestures) }
             RowDivider()
-            NavRow("手感与性能") { open(SettingsPage.PERFORMANCE) }
+            NavRow("手感与性能") { open(SettingsPage.Performance) }
         }
     }
     item(key = "about") {
         GroupedSection {
             GroupedRow("版本", value = "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
             RowDivider()
-            NavRow("开源许可") { open(SettingsPage.LICENSES) }
+            NavRow("开源许可") { open(SettingsPage.Licenses) }
         }
         Text(
             "Runnel — 跟手、流畅的 RSS 阅读器",
@@ -159,19 +160,22 @@ private fun LazyListScope.rootPage(open: (SettingsPage) -> Unit) {
 }
 
 @Composable
-private fun AccountPage(onLoggedOut: () -> Unit, open: (SettingsPage) -> Unit) {
+private fun AccountPage(id: String, onRemove: (String) -> Unit, open: (SettingsPage) -> Unit) {
     val graph = Graph.get()
-    val prefs = graph.prefs
-    val account by prefs.account.collectAsStateWithLifecycle()
+    val session = graph.session(id) ?: return
+    val prefs = session.prefs
+    val a by session.account.collectAsStateWithLifecycle()
     val settings by prefs.settings.collectAsStateWithLifecycle()
-    val lastSync by graph.sync.lastSyncAt.collectAsStateWithLifecycle()
+    val lastSync by session.sync.lastSyncAt.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val colors = Runnel.colors
-    val a = account
-    val host = a?.takeIf { it.isRemote }?.let { runCatching { java.net.URI(it.apiBase).host }.getOrNull() }
     var editName by remember { mutableStateOf<String?>(null) }
     var confirmRemove by remember { mutableStateOf(false) }
+    val local = a.type == AccountType.LOCAL
+    val demo = a.type == AccountType.DEMO
+
+    fun toast(text: String) = android.widget.Toast.makeText(context, text, android.widget.Toast.LENGTH_SHORT).show()
 
     // 导出 OPML：先让用户选保存位置，再把本地的订阅源和文件夹写进去
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/x-opml")) { uri ->
@@ -179,54 +183,79 @@ private fun AccountPage(onLoggedOut: () -> Unit, open: (SettingsPage) -> Unit) {
         scope.launch {
             val ok = withContext(Dispatchers.IO) {
                 runCatching {
-                    val folders = graph.db.feedDao().observeFolders().first()
-                    val feeds = graph.db.feedDao().allFeeds()
-                    val xml = Opml.build(a?.description?.ifBlank { null } ?: host ?: "Runnel", folders, feeds)
+                    val folders = session.db.feedDao().allFolders()
+                    val feeds = session.db.feedDao().allFeeds()
+                    val xml = Opml.build(a.displayName, folders, feeds)
                     context.contentResolver.openOutputStream(uri)?.use { it.write(xml.toByteArray()) } ?: error("无法写入文件")
                 }.isSuccess
             }
-            android.widget.Toast.makeText(context, if (ok) "已导出订阅" else "导出失败", android.widget.Toast.LENGTH_SHORT).show()
+            toast(if (ok) "已导出订阅" else "导出失败")
+        }
+    }
+    // 导入 OPML（本机账号）：读文件 → 建订阅源和文件夹 → 去抓
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val result = runCatching {
+                val entries = withContext(Dispatchers.IO) {
+                    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: error("无法读取文件")
+                    Opml.parse(bytes)
+                }
+                if (entries.isEmpty()) error("文件里没有订阅源")
+                entries.size to session.importOpml(entries)
+            }
+            result.onSuccess { (total, added) ->
+                toast(if (added == 0) "这 $total 个订阅源都已经订阅了" else "已导入 $added 个订阅源，正在更新")
+            }.onFailure { toast("导入失败：${it.message ?: it.javaClass.simpleName}") }
         }
     }
 
     GroupedSection("常规") {
-        GroupedRow("名称", value = a?.description?.takeIf { it.isNotBlank() } ?: host ?: a?.type?.label, onClick = { editName = a?.description.orEmpty() })
-        if (a != null && a.isRemote) {
+        GroupedRow("名称", value = a.displayName, onClick = { editName = a.description })
+        RowDivider()
+        GroupedRow("类型", value = a.type.label)
+        if (a.isRemote) {
             RowDivider()
             GroupedRow("服务器", value = a.apiBase, valueColor = colors.tertiaryLabel)
         }
     }
-    GroupedSection("同步", footer = "抓取订阅由服务器完成。“启动时”：打开 App 时同步；“后台刷新”：另外按下面的间隔在后台同步（部分系统会限制后台）。") {
-        PickerRow(
+    if (!demo) {
+        GroupedSection(
             "同步",
-            listOf(SyncMode.MANUAL to "手动", SyncMode.ON_START to "启动时", SyncMode.BACKGROUND to "后台刷新"),
-            settings.syncMode,
-        ) { mode ->
-            prefs.updateSettings { it.copy(syncMode = mode) }
-            if (a?.isRemote == true) SyncWorker.schedule(context, if (mode == SyncMode.BACKGROUND) settings.syncIntervalMinutes else 0)
-        }
-        if (settings.syncMode == SyncMode.BACKGROUND) {
+            footer = (if (local) "订阅源由这台设备自己抓取。" else "抓取订阅由服务器完成。") +
+                "“启动时”：打开 App 时同步；“后台刷新”：另外按下面的间隔在后台同步（部分系统会限制后台）。",
+        ) {
+            PickerRow(
+                "同步",
+                listOf(SyncMode.MANUAL to "手动", SyncMode.ON_START to "启动时", SyncMode.BACKGROUND to "后台刷新"),
+                settings.syncMode,
+            ) { mode ->
+                prefs.update { it.copy(syncMode = mode) }
+                graph.scheduleBackgroundSync(id)
+            }
+            if (settings.syncMode == SyncMode.BACKGROUND) {
+                RowDivider()
+                PickerRow(
+                    "后台同步间隔",
+                    listOf(30 to "30 分钟", 60 to "1 小时", 180 to "3 小时"),
+                    settings.syncIntervalMinutes,
+                ) { minutes ->
+                    prefs.update { it.copy(syncIntervalMinutes = minutes) }
+                    graph.scheduleBackgroundSync(id)
+                }
+            }
             RowDivider()
             PickerRow(
-                "后台同步间隔",
-                listOf(30 to "30 分钟", 60 to "1 小时", 180 to "3 小时"),
-                settings.syncIntervalMinutes,
-            ) { minutes ->
-                prefs.updateSettings { it.copy(syncIntervalMinutes = minutes) }
-                if (a?.isRemote == true) SyncWorker.schedule(context, minutes)
-            }
+                "保留已读文章",
+                listOf(-1 to "一直保留", 0 to "不保留", 1 to "1 天", 2 to "2 天", 3 to "3 天", 7 to "1 周", 14 to "2 周", 30 to "1 个月"),
+                settings.keepDays,
+            ) { days -> prefs.update { it.copy(keepDays = days) } }
         }
-        RowDivider()
-        PickerRow(
-            "保留已读文章",
-            listOf(-1 to "一直保留", 0 to "不保留", 1 to "1 天", 2 to "2 天", 3 to "3 天", 7 to "1 周", 14 to "2 周", 30 to "1 个月"),
-            settings.keepDays,
-        ) { days -> prefs.updateSettings { it.copy(keepDays = days) } }
     }
     GroupedSection("阅读", footer = "开启“滚动时标为已读”后，向下滚动时滑出屏幕的文章会自动标为已读；向上滚动不会。") {
-        NavRow("Reader View（全文）") { open(SettingsPage.READER_VIEW) }
+        NavRow("Reader View（全文）") { open(SettingsPage.ReaderViewPage(id)) }
         RowDivider()
-        NavRow("离线图片") { open(SettingsPage.OFFLINE_IMAGES) }
+        NavRow("离线图片") { open(SettingsPage.OfflineImagesPage(id)) }
         RowDivider()
         PickerRow(
             "订阅源排序",
@@ -235,59 +264,56 @@ private fun AccountPage(onLoggedOut: () -> Unit, open: (SettingsPage) -> Unit) {
                 SortSubs.FOLDERS_FIRST to "文件夹优先", SortSubs.UNREAD to "按未读数",
             ),
             settings.sortSubs,
-        ) { v -> prefs.updateSettings { it.copy(sortSubs = v) } }
+        ) { v -> prefs.update { it.copy(sortSubs = v) } }
         RowDivider()
         PickerRow("标记文章为已读", listOf(true to "打开时", false to "手动"), settings.markReadOnOpen) { v ->
-            prefs.updateSettings { it.copy(markReadOnOpen = v) }
+            prefs.update { it.copy(markReadOnOpen = v) }
         }
         RowDivider()
-        SwitchRow("滚动时标为已读", settings.markReadOnScroll) { v -> prefs.updateSettings { it.copy(markReadOnScroll = v) } }
+        SwitchRow("滚动时标为已读", settings.markReadOnScroll) { v -> prefs.update { it.copy(markReadOnScroll = v) } }
     }
-    GroupedSection("订阅") {
+    GroupedSection("订阅", footer = if (local) "导入别的阅读器导出的 OPML 文件：已经订阅的跳过，文件夹照原样建好。" else null) {
+        if (session.canImportOpml) {
+            GroupedRow("从 OPML 导入…", centered = true, onClick = { importLauncher.launch(arrayOf("*/*")) })
+            RowDivider()
+        }
         GroupedRow("导出为 OPML…", centered = true, onClick = { exportLauncher.launch("Runnel.opml") })
     }
     GroupedSection("账号") {
-        GroupedRow("立即同步", value = syncedAgo(lastSync), titleColor = colors.accent, onClick = { graph.sync.requestSync() })
-        RowDivider()
+        if (!demo) {
+            GroupedRow("立即同步", value = syncedAgo(lastSync), titleColor = colors.accent, onClick = { session.sync.requestSync() })
+            RowDivider()
+        }
         GroupedRow("移除账号…", centered = true, titleColor = colors.destructive, onClick = { confirmRemove = true })
     }
 
     editName?.let { text ->
-        AlertDialog(
-            onDismissRequest = { editName = null },
-            title = { Text("账号名称") },
-            text = {
-                BasicTextField(
-                    value = text,
-                    onValueChange = { editName = it },
-                    singleLine = true,
-                    textStyle = Runnel.type.body.copy(color = colors.label),
-                    cursorBrush = SolidColor(colors.accent),
-                    modifier = Modifier.fillMaxWidth(),
-                )
+        TextPrompt(
+            title = "账号名称",
+            value = text,
+            onChange = { editName = it },
+            onConfirm = {
+                graph.prefs.setAccountDescription(id, text)
+                editName = null
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    prefs.setAccountDescription(text)
-                    editName = null
-                }) { Text("好", color = colors.accent) }
-            },
-            dismissButton = { TextButton(onClick = { editName = null }) { Text("取消", color = colors.icon) } },
-            containerColor = colors.cell,
+            onDismiss = { editName = null },
         )
     }
     if (confirmRemove) {
         AlertDialog(
             onDismissRequest = { confirmRemove = false },
-            title = { Text("移除账号？") },
-            text = { Text("会退出登录并清掉这台手机上缓存的订阅和文章。服务器上的数据不受影响。") },
+            title = { Text("移除账号「${a.displayName}」？") },
+            text = {
+                Text(
+                    if (a.isRemote) "会移除这个账号，并清掉这台手机上缓存的订阅和文章。服务器上的数据不受影响。"
+                    else if (local) "这个账号的订阅源、文章和星标都只存在这台设备上，移除后无法恢复。可以先导出 OPML 备份订阅源。"
+                    else "会移除演示数据。",
+                )
+            },
             confirmButton = {
                 TextButton(onClick = {
                     confirmRemove = false
-                    scope.launch {
-                        graph.logout()
-                        onLoggedOut()
-                    }
+                    onRemove(id)
                 }) { Text("移除", color = colors.destructive) }
             },
             dismissButton = { TextButton(onClick = { confirmRemove = false }) { Text("取消", color = colors.icon) } },
@@ -298,17 +324,17 @@ private fun AccountPage(onLoggedOut: () -> Unit, open: (SettingsPage) -> Unit) {
 
 /** 账号 → Reader View：默认提取器 + 勾选默认用 Reader View（自动抓全文）打开的订阅源。 */
 @Composable
-private fun ReaderViewPage() {
-    val graph = Graph.get()
-    val prefs = graph.prefs
+private fun ReaderViewPage(id: String) {
+    val session = Graph.get().session(id) ?: return
+    val prefs = session.prefs
     val settings by prefs.settings.collectAsStateWithLifecycle()
     val feeds by produceState(emptyList<FeedEntity>()) {
-        value = withContext(Dispatchers.IO) { graph.db.feedDao().allFeeds() }.sortedBy { it.title.lowercase() }
+        value = withContext(Dispatchers.IO) { session.db.feedDao().allFeeds() }.sortedBy { it.title.lowercase() }
     }
     // 旧版全局 Readability 等于全选；在这里改过一次后就换成按订阅源保存
     fun update(selected: (Set<String>) -> Set<String>) {
         if (feeds.isEmpty()) return // 订阅源还没读出来时不写，免得把旧版的“全选”清掉
-        prefs.updateSettings { s ->
+        prefs.update { s ->
             val current = if (s.readerView == ReaderView.READABILITY) feeds.mapTo(HashSet()) { it.id } else s.readerViewFeeds
             s.copy(readerView = ReaderView.DEFAULT, readerViewFeeds = selected(current))
         }
@@ -336,12 +362,13 @@ private fun ReaderViewPage() {
 
 /** 账号 → 离线图片：勾选的订阅源，同步后预先下载未读和星标文章的正文图片，没网也能看。 */
 @Composable
-private fun OfflineImagesPage() {
+private fun OfflineImagesPage(id: String) {
     val graph = Graph.get()
-    val prefs = graph.prefs
+    val session = graph.session(id) ?: return
+    val prefs = session.prefs
     val settings by prefs.settings.collectAsStateWithLifecycle()
     val feeds by produceState(emptyList<FeedEntity>()) {
-        value = withContext(Dispatchers.IO) { graph.db.feedDao().allFeeds() }.sortedBy { it.title.lowercase() }
+        value = withContext(Dispatchers.IO) { session.db.feedDao().allFeeds() }.sortedBy { it.title.lowercase() }
     }
     val used by produceState(0L) {
         while (true) {
@@ -350,9 +377,9 @@ private fun OfflineImagesPage() {
         }
     }
     fun update(selected: (Set<String>) -> Set<String>) {
-        prefs.updateSettings { it.copy(offlineImageFeeds = selected(it.offlineImageFeeds)) }
+        prefs.update { it.copy(offlineImageFeeds = selected(it.offlineImageFeeds)) }
         // 新勾的订阅源马上开始下，不等下次同步
-        graph.offlineImages.requestPrefetch()
+        session.offlineImages.requestPrefetch()
     }
 
     val mb = { bytes: Long -> "%.0f MB".format(Locale.US, bytes / 1024.0 / 1024.0) }
@@ -570,5 +597,5 @@ private fun PerformancePage() {
 
 private fun screenLabel(name: String) = when (name) {
     "Home" -> "首页"; "Articles" -> "文章列表"; "Reader" -> "阅读页"
-    "Settings" -> "设置"; "AddFeed" -> "添加订阅"; "Search" -> "搜索"; "Login" -> "登录"; else -> name
+    "Settings" -> "设置"; "AddFeed" -> "添加订阅"; "Search" -> "搜索"; "Login" -> "登录"; "Accounts" -> "账号列表"; else -> name
 }

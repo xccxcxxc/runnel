@@ -44,9 +44,9 @@ class ReaderStylePanelTest {
         rule.setContent {
             RunnelTheme(Settings()) {
                 val scope = rememberCoroutineScope()
-                navigator = remember { Navigator(Route.Home, scope).also { it.push(Route.Search) } }
+                navigator = remember { Navigator(listOf(Route.Accounts), scope).also { it.push(Route.Search("a")) } }
                 NavHost(navigator) { entry ->
-                    if (entry.route == Route.Search) ReaderStylePanel(visible = panel, onDismiss = {})
+                    if (entry.route is Route.Search) ReaderStylePanel(visible = panel, onDismiss = {})
                 }
             }
         }

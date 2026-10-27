@@ -3,6 +3,7 @@ package io.github.xccxcxxc.runnel
 import io.github.xccxcxxc.runnel.data.db.FeedEntity
 import io.github.xccxcxxc.runnel.data.db.FolderEntity
 import io.github.xccxcxxc.runnel.sync.Opml
+import io.github.xccxcxxc.runnel.sync.OpmlEntry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -31,5 +32,47 @@ class OpmlTest {
         // 所属文件夹已不存在的订阅源当作未归类输出；没有 feedUrl 就不写 xmlUrl
         assertEquals(1, Regex("text=\"C\"").findAll(xml).count())
         assertTrue(xml, "<outline type=\"rss\" text=\"B\" title=\"B\" htmlUrl=\"https://b.example\"/>" in xml)
+    }
+
+    @Test
+    fun importReadsFoldersAndLooseFeeds() {
+        val xml = """<?xml version="1.0" encoding="UTF-8"?>
+            <opml version="1.0"><head><title>别的阅读器</title></head><body>
+              <outline text="科技" title="科技">
+                <outline type="rss" text="A" title="A 站" xmlUrl="https://a.example/feed" htmlUrl="https://a.example/"/>
+                <outline text="子文件夹"><outline text="B" xmlUrl="https://b.example/rss"/></outline>
+              </outline>
+              <outline type="rss" text="C" xmlurl="https://c.example/atom.xml"/>
+              <outline text="重复" xmlUrl="https://a.example/feed"/>
+              <outline text="没有地址"/>
+              <outline text="不是网址" xmlUrl="feed://x"/>
+            </body></opml>"""
+        val entries = Opml.parse(xml.toByteArray())
+        assertEquals(
+            listOf(
+                OpmlEntry("A 站", "https://a.example/feed", "https://a.example/", "科技"),
+                OpmlEntry("B", "https://b.example/rss", null, "子文件夹"),
+                OpmlEntry("C", "https://c.example/atom.xml", null, null),
+            ),
+            entries,
+        )
+    }
+
+    /** 导出的再导入能还原订阅源和文件夹。 */
+    @Test
+    fun exportThenImportRoundTrips() {
+        val xml = Opml.build(
+            "Runnel",
+            listOf(FolderEntity("user/-/label/Tech", "科技 & 数码", 0)),
+            listOf(feed("a", "A \"引号\"", "user/-/label/Tech", "https://a.example/feed?x=1&y=2"), feed("b", "B", null, "https://b.example/rss")),
+        )
+        val entries = Opml.parse(xml.toByteArray())
+        assertEquals(
+            listOf(
+                OpmlEntry("A \"引号\"", "https://a.example/feed?x=1&y=2", "https://a.example", "科技 & 数码"),
+                OpmlEntry("B", "https://b.example/rss", "https://b.example", null),
+            ),
+            entries,
+        )
     }
 }

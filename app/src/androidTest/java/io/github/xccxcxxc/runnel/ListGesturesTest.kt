@@ -49,6 +49,7 @@ class ListGesturesTest {
 
     private var scenario: ActivityScenario<MainActivity>? = null
     private val graph get() = Graph.get()
+    private lateinit var account: AccountSession
 
     /** 演示数据里的订阅源；列表里没有文件夹的那个，首页直接能点到。 */
     private lateinit var feed: ArticleSource.Feed
@@ -56,9 +57,9 @@ class ListGesturesTest {
 
     @Before
     fun setUp() {
-        runBlocking { graph.logout() }
         // 同步方式设为“手动”（用户可选的设置）：演示账号启动时的“同步”会加几篇新文章，未读数就不固定了
-        graph.prefs.updateSettings { it.copy(syncMode = SyncMode.MANUAL, pullBottom = PullBottom.MARK_ALL_READ, markAllAsk = false, markAllOpenNext = false) }
+        account = TestAccounts.fresh()
+        graph.prefs.updateSettings { it.copy(pullBottom = PullBottom.MARK_ALL_READ, markAllAsk = false, markAllOpenNext = false) }
     }
 
     @After
@@ -66,7 +67,7 @@ class ListGesturesTest {
         scenario?.close()
     }
 
-    private fun unreadInFeed(): Int = runBlocking { graph.repo.loadList(feed, FilterMode.UNREAD).size }
+    private fun unreadInFeed(): Int = runBlocking { account.repo.loadList(feed, FilterMode.UNREAD).size }
 
     /**
      * 小份演示数据，只留 [title] 最新的 4 篇未读（内容不满一屏，和用户的订阅源一样），进入它的列表。
@@ -74,15 +75,14 @@ class ListGesturesTest {
      */
     private fun openShortFeed(title: String = "Maple Notes", next: String? = null) {
         runBlocking {
-            DemoData.populate(graph.db, count = 150)
-            val feeds = graph.db.feedDao().allFeeds()
+            DemoData.populate(account.db, count = 150)
+            val feeds = account.db.feedDao().allFeeds()
             feed = feeds.first { it.title == title }.let { ArticleSource.Feed(it.id, it.title, null) }
-            val keep = graph.repo.loadList(feed, FilterMode.ALL).take(4) +
-                (next?.let { n -> graph.repo.loadList(feeds.first { it.title == n }.let { ArticleSource.Feed(it.id, it.title, null) }, FilterMode.ALL).take(2) } ?: emptyList())
-            graph.db.articleDao().setRead(graph.db.articleDao().allIds().filter { id -> keep.none { it.id == id } }, true)
+            val keep = account.repo.loadList(feed, FilterMode.ALL).take(4) +
+                (next?.let { n -> account.repo.loadList(feeds.first { it.title == n }.let { ArticleSource.Feed(it.id, it.title, null) }, FilterMode.ALL).take(2) } ?: emptyList())
+            account.db.articleDao().setRead(account.db.articleDao().allIds().filter { id -> keep.none { it.id == id } }, true)
             firstTitle = keep.take(4).minBy { it.publishedAt }.title // “未读”默认旧→新
         }
-        graph.prefs.saveAccount(Account(AccountType.DEMO, "", "demo"))
         check(unreadInFeed() == 4)
         scenario = ActivityScenario.launch(Intent(ApplicationProvider.getApplicationContext(), MainActivity::class.java))
         rule.waitUntilAtLeastOneExists(hasText(feed.title), 30_000)
@@ -135,8 +135,8 @@ class ListGesturesTest {
     fun pullFromBottomLeavesWhenNothingUnread() {
         openShortFeed()
         runBlocking {
-            val ids = graph.repo.loadList(feed, FilterMode.ALL).map { it.id }
-            graph.repo.setRead(ids, true)
+            val ids = account.repo.loadList(feed, FilterMode.ALL).map { it.id }
+            account.repo.setRead(ids, true)
         }
         rule.waitForIdle()
         pullUp()
@@ -161,11 +161,11 @@ class ListGesturesTest {
 
     /** 列表里的文章，按显示顺序（“未读”默认旧→新）。 */
     private fun shownTitles(): List<String> = runBlocking {
-        graph.repo.loadList(feed, FilterMode.UNREAD).sortedBy { it.publishedAt }.map { it.title }
+        account.repo.loadList(feed, FilterMode.UNREAD).sortedBy { it.publishedAt }.map { it.title }
     }
 
     private fun isRead(title: String): Boolean = runBlocking {
-        graph.repo.loadList(feed, FilterMode.ALL).first { it.title == title }.isRead
+        account.repo.loadList(feed, FilterMode.ALL).first { it.title == title }.isRead
     }
 
     private fun longPress(title: String) {
@@ -237,12 +237,12 @@ class ListGesturesTest {
         graph.prefs.updateSettings { it.copy(pullBottom = PullBottom.NEXT_FEED) }
         openShortFeed(title = "Pixel Garden", next = "Maple Notes")
         val nextFeed = runBlocking {
-            graph.db.feedDao().allFeeds().first { it.title == "Maple Notes" }.let { ArticleSource.Feed(it.id, it.title, null) }
+            account.db.feedDao().allFeeds().first { it.title == "Maple Notes" }.let { ArticleSource.Feed(it.id, it.title, null) }
         }
         pullUp()
         rule.waitUntil(10_000) { rule.onAllNodes(hasText("2 篇未读")).fetchSemanticsNodes().isNotEmpty() }
         assertUnreadBecomesZero()
-        assertEquals(2, runBlocking { graph.repo.loadList(nextFeed, FilterMode.UNREAD).size })
+        assertEquals(2, runBlocking { account.repo.loadList(nextFeed, FilterMode.UNREAD).size })
     }
 
     /**

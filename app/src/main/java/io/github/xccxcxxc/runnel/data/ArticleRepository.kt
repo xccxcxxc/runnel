@@ -32,8 +32,10 @@ sealed interface ArticleSource {
     data class Feed(val id: String, override val title: String, val iconUrl: String?) : ArticleSource
 }
 
+/** 一个账号的文章读写（列表快照、已读/星标、全文）。 */
 class ArticleRepository(
     private val db: RunnelDatabase,
+    /** 全 App 的设置（未读排序）。 */
     private val prefs: Prefs,
     val flags: FlagStore,
     private val sync: SyncEngine,
@@ -182,7 +184,7 @@ class ArticleRepository(
     }
 
     private suspend fun persist(ids: List<Long>, action: Int, update: suspend (List<Long>) -> Unit) {
-        val remote = prefs.account.value?.isRemote == true
+        val remote = sync.queuesActions
         withContext(Dispatchers.IO) {
             db.inTransaction {
                 ids.chunked(SyncEngine.SQL_CHUNK).forEach { update(it) }

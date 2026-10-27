@@ -1,5 +1,6 @@
 package io.github.xccxcxxc.runnel
 
+import io.github.xccxcxxc.runnel.data.AccountSettings
 import io.github.xccxcxxc.runnel.data.ReaderView
 import io.github.xccxcxxc.runnel.data.Settings
 import io.github.xccxcxxc.runnel.data.db.ReaderArticle
@@ -12,15 +13,15 @@ import org.junit.Test
 class ReaderViewTest {
     @Test
     fun readerViewIsPerFeed() {
-        val s = Settings(readerViewFeeds = setOf("feed/1"))
+        val s = AccountSettings(readerViewFeeds = setOf("feed/1"))
         assertTrue(s.autoReaderView("feed/1"))
         assertFalse(s.autoReaderView("feed/2"))
-        assertFalse(Settings().autoReaderView("feed/1"))
+        assertFalse(AccountSettings().autoReaderView("feed/1"))
     }
 
     @Test
     fun legacyGlobalReadabilityMeansAllFeeds() {
-        assertTrue(Settings(readerView = ReaderView.READABILITY).autoReaderView("anything"))
+        assertTrue(AccountSettings(readerView = ReaderView.READABILITY).autoReaderView("anything"))
     }
 
     @Test

@@ -26,7 +26,8 @@ class RunnelApp : Application() {
                 }
                 .build()
         }
-        val account = graph.prefs.account.value
-        if (account?.isRemote == true) SyncWorker.schedule(this, graph.prefs.settings.value.syncIntervalMinutes)
+        // 每次启动按各账号的设置排一遍（UPDATE 策略，已经排好的不会重来）；单账号版本留下的任务换成按账号的
+        if (graph.prefs.upgradedToMultiAccount) SyncWorker.cancelLegacy(this)
+        graph.prefs.accounts.value.forEach { graph.scheduleBackgroundSync(it.id) }
     }
 }

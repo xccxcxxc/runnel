@@ -43,7 +43,8 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import io.github.xccxcxxc.runnel.AppGraph
+import io.github.xccxcxxc.runnel.AccountSession
+import io.github.xccxcxxc.runnel.LocalAccount
 import io.github.xccxcxxc.runnel.Graph
 import io.github.xccxcxxc.runnel.data.db.ArticleListItem
 import io.github.xccxcxxc.runnel.ui.components.BarHeight
@@ -62,7 +63,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 @OptIn(FlowPreview::class)
-class SearchState(graph: AppGraph, scope: CoroutineScope) {
+class SearchState(account: AccountSession, scope: CoroutineScope) {
     val query = MutableStateFlow("")
     var results by mutableStateOf<List<ArticleListItem>?>(null)
         private set
@@ -70,7 +71,7 @@ class SearchState(graph: AppGraph, scope: CoroutineScope) {
     init {
         scope.launch {
             query.debounce(200).distinctUntilChanged().collect { q ->
-                results = if (q.isBlank()) null else graph.repo.search(q)
+                results = if (q.isBlank()) null else account.repo.search(q)
             }
         }
     }
@@ -78,15 +79,15 @@ class SearchState(graph: AppGraph, scope: CoroutineScope) {
 
 @Composable
 fun SearchScreen(onBack: () -> Unit, onOpenArticle: (ReaderSession) -> Unit) {
-    val graph = Graph.get()
+    val account = LocalAccount.current
     val entry = LocalNavEntry.current
-    val state = entry.retain("search") { SearchState(graph, entry.scope) }
+    val state = entry.retain("search") { SearchState(account, entry.scope) }
     val colors = Runnel.colors
     var text by remember { mutableStateOf(state.query.value) }
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
     val listState = rememberLazyListState()
-    val flags = graph.repo.flags
+    val flags = account.repo.flags
     val results = state.results
 
     LaunchedEffect(Unit) { if (text.isEmpty()) focus.requestFocus() }

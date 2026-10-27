@@ -1,7 +1,7 @@
 package io.github.xccxcxxc.runnel.content
 
 import android.util.Log
-import io.github.xccxcxxc.runnel.data.Prefs
+import io.github.xccxcxxc.runnel.data.AccountPrefs
 import io.github.xccxcxxc.runnel.data.db.RunnelDatabase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 class OfflineImages(
     private val db: RunnelDatabase,
-    private val prefs: Prefs,
+    private val prefs: AccountPrefs,
     private val cache: () -> ReaderImageCache,
     private val scope: CoroutineScope,
 ) {
